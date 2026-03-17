@@ -2,6 +2,18 @@ function trimTrailingSlash(value) {
   return value.endsWith("/") ? value.slice(0, -1) : value;
 }
 
+function buildQueryString(params = {}) {
+  const search = new URLSearchParams();
+  Object.entries(params).forEach(([key, value]) => {
+    if (value === null || value === undefined || value === "") {
+      return;
+    }
+    search.set(key, String(value));
+  });
+  const query = search.toString();
+  return query ? `?${query}` : "";
+}
+
 export function getApiBase(explicitBase) {
   const globalBase =
     typeof window !== "undefined" && typeof window.__RUSSIAN_BLOCK_API_BASE__ === "string"
@@ -77,7 +89,7 @@ export class RussianBlockApiClient {
     });
   }
 
-  getLeaderboard(board) {
-    return this.request(`/api/leaderboards/${encodeURIComponent(board)}`);
+  getLeaderboard(board, params = {}) {
+    return this.request(`/api/leaderboards/${encodeURIComponent(board)}${buildQueryString(params)}`);
   }
 }

@@ -202,9 +202,25 @@ async function startMockApiServer(appBaseUrl) {
           score: entry.score ?? 0,
           lines: entry.lines ?? 0,
           duration_ms: entry.durationMs ?? 0,
+          replay_code: entry.replayCode ?? null,
         }))
         .sort((left, right) => (right.score - left.score) || (left.duration_ms - right.duration_ms));
-      sendJson(response, 200, { board, entries });
+      const replayCode = url.searchParams.get("replayCode");
+      const currentEntry = replayCode
+        ? source.find((entry) => String(entry.replayCode ?? "") === replayCode)
+        : null;
+      const currentRank = currentEntry
+        ? {
+            rank:
+              entries.findIndex((entry) => String(entry.replay_code ?? "") === replayCode) + 1 ||
+              entries.length + 1,
+            replayCode,
+            score: currentEntry.score ?? 0,
+            durationMs: currentEntry.durationMs ?? 0,
+            nickname: currentEntry.nickname ?? null,
+          }
+        : null;
+      sendJson(response, 200, { board, entries, total: entries.length, currentRank });
       return;
     }
 
@@ -701,6 +717,7 @@ async function runSharingFlowLoop(baseUrl, playwright) {
         autoStartLastMode: false,
         ghostEnabled: true,
         apiBase,
+        nickname: "Axis",
       })
     );
     window.__clipboardWrites = [];
@@ -733,6 +750,13 @@ async function runSharingFlowLoop(baseUrl, playwright) {
 
   try {
     const getState = () => page.evaluate(() => JSON.parse(window.render_game_to_text()));
+    const expectedLocalDate = (() => {
+      const current = new Date();
+      const year = current.getFullYear();
+      const month = String(current.getMonth() + 1).padStart(2, "0");
+      const day = String(current.getDate()).padStart(2, "0");
+      return `${year}-${month}-${day}`;
+    })();
 
     await page.goto(`${baseUrl}?play=challenge&code=CDEMO1`, { waitUntil: "networkidle" });
     await page.waitForFunction(() => JSON.parse(window.render_game_to_text()).mode === "playing");
@@ -751,11 +775,23 @@ async function runSharingFlowLoop(baseUrl, playwright) {
       mockApi.state.challengeSubmissions[0].replayCode === "R1",
       "Challenge submission should include the uploaded replay code"
     );
+    assert(
+      mockApi.state.challengeSubmissions[0].nickname === "Axis",
+      "Challenge submission should include the stored nickname"
+    );
     await expectResultText(page, /已提交/);
     await page.waitForFunction(
       () => {
         const target = document.querySelector("#leaderboard-list");
-        return Boolean(target && /#1/.test(target.textContent ?? "") && /Anonymous/.test(target.textContent ?? ""));
+        const resultGrid = document.querySelector("#result-grid");
+        return Boolean(
+          target &&
+            resultGrid &&
+            /#1/.test(target.textContent ?? "") &&
+            /Axis/.test(target.textContent ?? "") &&
+            /Goal (reached|missed)/.test(resultGrid.textContent ?? "") &&
+            /Target/.test(resultGrid.textContent ?? "")
+        );
       }
     );
     await page.locator("#view-replay-page-btn").click();
@@ -820,7 +856,7 @@ async function runSharingFlowLoop(baseUrl, playwright) {
     await page.waitForFunction(() => JSON.parse(window.render_game_to_text()).mode === "playing");
     state = await getState();
     assert(state.gameMode === "ultra", "Daily challenge should start a playable configured mode");
-    assert(/^daily-ultra-\d{4}-\d{2}-\d{2}$/.test(state.seed), "Daily challenge should load the server-provided seed");
+    assert(state.seed === `daily-ultra-${expectedLocalDate}`, "Daily challenge should use the browser-local challenge date");
     await page.evaluate(() => window.advanceTime(120000));
     await page.waitForFunction(() => JSON.parse(window.render_game_to_text()).mode === "completed");
     await waitForCondition(() => mockApi.state.dailySubmissions.length === 1, 3000, "daily submission");
@@ -837,7 +873,8 @@ async function runSharingFlowLoop(baseUrl, playwright) {
           title &&
             list &&
             /今日挑战/.test(title.textContent ?? "") &&
-            /#1/.test(list.textContent ?? "")
+            /#1/.test(list.textContent ?? "") &&
+            /Axis/.test(list.textContent ?? "")
         );
       }
     );

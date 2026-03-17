@@ -12,6 +12,7 @@ const DEFAULT_SETTINGS = {
   autoStartLastMode: true,
   ghostEnabled: true,
   apiBase: "",
+  nickname: "",
 };
 
 export function loadSettings() {
@@ -30,6 +31,7 @@ export function loadSettings() {
       autoStartLastMode: parsed.autoStartLastMode !== false,
       ghostEnabled: parsed.ghostEnabled !== false,
       apiBase: typeof parsed.apiBase === "string" ? parsed.apiBase.trim() : "",
+      nickname: typeof parsed.nickname === "string" ? parsed.nickname.trim().slice(0, 24) : "",
     };
   } catch {
     return { ...DEFAULT_SETTINGS };
@@ -46,6 +48,7 @@ export function saveSettings(nextSettings) {
     autoStartLastMode: nextSettings.autoStartLastMode !== false,
     ghostEnabled: nextSettings.ghostEnabled !== false,
     apiBase: typeof nextSettings.apiBase === "string" ? nextSettings.apiBase.trim() : "",
+    nickname: typeof nextSettings.nickname === "string" ? nextSettings.nickname.trim().slice(0, 24) : "",
   };
   window.localStorage.setItem(STORAGE_KEY, JSON.stringify(payload));
 }

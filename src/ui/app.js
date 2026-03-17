@@ -40,6 +40,13 @@ function formatTimer(durationMs) {
   return formatDuration(durationMs);
 }
 
+function getLocalDateString(date = new Date()) {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, "0");
+  const day = String(date.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
+}
+
 function buildReplayIdentity(replay) {
   return {
     replayId: replay?.replayId ?? "",
@@ -410,6 +417,10 @@ export class RussianBlockApp {
                 <input type="checkbox" id="ghost-toggle" />
               </label>
             </div>
+            <label class="seed-field settings-nickname">
+              <span class="theme-showcase-label">Nickname</span>
+              <input type="text" id="nickname-input" maxlength="24" placeholder="Anonymous" />
+            </label>
             <button type="button" class="secondary-btn settings-install settings-install--hidden" id="install-btn">安装到主屏幕</button>
             <label class="seed-field settings-api">
               <span class="theme-showcase-label">API Base</span>
@@ -435,6 +446,7 @@ export class RussianBlockApp {
     this.muteToggle = this.root.querySelector("#mute-toggle");
     this.autostartToggle = this.root.querySelector("#autostart-toggle");
     this.ghostToggle = this.root.querySelector("#ghost-toggle");
+    this.nicknameInput = this.root.querySelector("#nickname-input");
     this.apiBaseInput = this.root.querySelector("#api-base-input");
     this.installButton = this.root.querySelector("#install-btn");
     this.pauseButton = this.root.querySelector("#pause-btn");
@@ -488,6 +500,17 @@ export class RussianBlockApp {
     this.watchChallengeButton = this.watchPanel.querySelector("#watch-challenge-btn");
     this.watchSeedButton = this.watchPanel.querySelector("#watch-seed-btn");
     this.watchMenuButton = this.watchPanel.querySelector("#watch-menu-btn");
+    this.remoteSessionPanel = document.createElement("section");
+    this.remoteSessionPanel.id = "remote-session-panel";
+    this.remoteSessionPanel.className = "remote-session-panel remote-session-panel--hidden";
+    this.remoteSessionPanel.innerHTML = `
+      <span class="eyebrow">Challenge</span>
+      <strong id="remote-session-title"></strong>
+      <p id="remote-session-copy"></p>
+    `;
+    this.watchPanel.insertAdjacentElement("afterend", this.remoteSessionPanel);
+    this.remoteSessionTitle = this.remoteSessionPanel.querySelector("#remote-session-title");
+    this.remoteSessionCopy = this.remoteSessionPanel.querySelector("#remote-session-copy");
     this.resultLeaderboard = document.createElement("section");
     this.resultLeaderboard.id = "result-leaderboard";
     this.resultLeaderboard.className = "leaderboard-panel leaderboard-panel--hidden";
@@ -571,6 +594,11 @@ export class RussianBlockApp {
       this.settings.ghostEnabled = this.ghostToggle.checked;
       this.persistSettings();
       this.render();
+    });
+    this.nicknameInput.addEventListener("change", () => {
+      this.settings.nickname = this.nicknameInput.value.trim().slice(0, 24);
+      this.nicknameInput.value = this.settings.nickname;
+      this.persistSettings();
     });
     this.apiBaseInput.addEventListener("change", () => {
       this.settings.apiBase = this.apiBaseInput.value.trim();
@@ -738,6 +766,78 @@ export class RussianBlockApp {
     };
   }
 
+  formatGoalCopy(goal = {}) {
+    const parts = [];
+    if (goal.score) {
+      parts.push(`Score ${formatScore(Number(goal.score) || 0)}`);
+    }
+    if (goal.lines) {
+      parts.push(`Lines ${Number(goal.lines) || 0}`);
+    }
+    if (goal.durationMs) {
+      parts.push(`Time ${formatDuration(Number(goal.durationMs) || 0)}`);
+    }
+    return parts.join(" · ");
+  }
+
+  evaluateRemoteGoal(context, runSummary) {
+    const goal = context?.goal;
+    if (!goal || !runSummary) {
+      return null;
+    }
+
+    const checks = [];
+    if (goal.score) {
+      checks.push({
+        label: "Score",
+        target: Number(goal.score) || 0,
+        actual: Number(runSummary.score) || 0,
+        higherIsBetter: true,
+      });
+    }
+    if (goal.lines) {
+      checks.push({
+        label: "Lines",
+        target: Number(goal.lines) || 0,
+        actual: Number(runSummary.lines) || 0,
+        higherIsBetter: true,
+      });
+    }
+    if (goal.durationMs) {
+      checks.push({
+        label: "Time",
+        target: Number(goal.durationMs) || 0,
+        actual: Number(runSummary.durationMs) || 0,
+        higherIsBetter: false,
+      });
+    }
+    if (checks.length === 0) {
+      return null;
+    }
+
+    const summary = checks.map((check) => {
+      const delta = check.higherIsBetter ? check.actual - check.target : check.target - check.actual;
+      return {
+        ...check,
+        delta,
+        passed: delta >= 0,
+      };
+    });
+
+    return {
+      passed: summary.every((check) => check.passed),
+      summary,
+      copy: summary
+        .map((check) => {
+          if (check.label === "Time") {
+            return `${check.label} ${check.passed ? "faster" : "slower"} by ${formatDuration(Math.abs(check.delta))}`;
+          }
+          return `${check.label} ${check.passed ? "+" : "-"}${formatScore(Math.abs(check.delta))}`;
+        })
+        .join(" · "),
+    };
+  }
+
   async copyTextToClipboard(text) {
     if (!text) {
       return false;
@@ -753,7 +853,7 @@ export class RussianBlockApp {
   buildRemoteSubmissionPayload(runSummary, replayCode) {
     return {
       replayCode,
-      nickname: null,
+      nickname: this.settings.nickname ? this.settings.nickname.trim() : null,
       score: runSummary.score,
       lines: runSummary.lines,
       durationMs: runSummary.durationMs,
@@ -776,7 +876,7 @@ export class RussianBlockApp {
     return context.type === "daily" ? `daily:${context.date}` : context.code;
   }
 
-  async refreshRemoteLeaderboard(context = this.activeRemoteSession) {
+  async refreshRemoteLeaderboard(context = this.activeRemoteSession, currentSubmission = null) {
     if (!context || !this.apiClient.configured) {
       this.remoteLeaderboard = null;
       this.remoteLeaderboardStatus = "idle";
@@ -790,17 +890,21 @@ export class RussianBlockApp {
       context: { ...context },
       board,
       entries: this.remoteLeaderboard?.board === board ? this.remoteLeaderboard.entries : [],
+      total: this.remoteLeaderboard?.board === board ? this.remoteLeaderboard.total ?? 0 : 0,
+      currentRank: this.remoteLeaderboard?.board === board ? this.remoteLeaderboard.currentRank ?? null : null,
     };
     this.remoteLeaderboardStatus = "loading";
     this.remoteLeaderboardError = "";
     this.updateUiState();
 
     try {
-      const response = await this.apiClient.getLeaderboard(board);
+      const response = await this.apiClient.getLeaderboard(board, currentSubmission ?? {});
       this.remoteLeaderboard = {
         context: { ...context },
         board,
         entries: Array.isArray(response.entries) ? response.entries : [],
+        total: Number(response.total) || 0,
+        currentRank: response.currentRank ?? null,
       };
       this.remoteLeaderboardStatus = "ready";
     } catch (error) {
@@ -808,6 +912,8 @@ export class RussianBlockApp {
         context: { ...context },
         board,
         entries: [],
+        total: 0,
+        currentRank: null,
       };
       this.remoteLeaderboardStatus = "error";
       this.remoteLeaderboardError = error instanceof Error ? error.message : "Failed to load leaderboard.";
@@ -924,8 +1030,14 @@ export class RussianBlockApp {
         status: "success",
         context,
         replayCode: replayResponse.code,
+        payload,
       };
-      await this.refreshRemoteLeaderboard(context);
+      await this.refreshRemoteLeaderboard(context, {
+        replayCode: replayResponse.code,
+        score: payload.score,
+        durationMs: payload.durationMs,
+        nickname: payload.nickname,
+      });
       return;
     } catch (error) {
       this.lastRemoteSubmission = {
@@ -1456,6 +1568,8 @@ export class RussianBlockApp {
           type: "challenge",
           code: normalizedCode,
           title: challenge.title ?? normalizedCode,
+          goal: challenge.goal ?? null,
+          replayCode: challenge.replayCode ?? null,
         },
       });
       this.statusMessage = `已载入挑战 ${normalizedCode}。`;
@@ -1515,7 +1629,7 @@ export class RussianBlockApp {
     }
 
     try {
-      const date = new Date().toISOString().slice(0, 10);
+      const date = getLocalDateString();
       const response = await this.apiClient.getDaily(date);
       const daily = response.challenge ?? response;
       this.statusMessage = `今日挑战 ${date} 已就绪。`;
@@ -2228,6 +2342,7 @@ export class RussianBlockApp {
     this.muteToggle.checked = this.settings.muted;
     this.autostartToggle.checked = this.settings.autoStartLastMode;
     this.ghostToggle.checked = this.settings.ghostEnabled;
+    this.nicknameInput.value = this.settings.nickname ?? "";
     this.apiBaseInput.value = this.settings.apiBase ?? "";
     this.menuOverlay.classList.toggle("overlay--hidden", this.engine.mode !== "menu");
     this.pauseOverlay.classList.toggle("overlay--hidden", this.engine.mode !== "paused");
@@ -2238,8 +2353,23 @@ export class RussianBlockApp {
     this.pauseButton.hidden = this.engine.mode !== "playing" || Boolean(this.replayPlayer);
     this.replayBanner.classList.toggle("replay-banner--hidden", !this.replayPlayer);
     this.watchPanel.classList.toggle("watch-panel--hidden", !(this.replayPlayer && this.watchSession));
+    const sessionContext = !this.replayPlayer && this.activeRemoteSession && this.engine.mode !== "menu"
+      ? this.activeRemoteSession
+      : null;
+    this.remoteSessionPanel.classList.toggle("remote-session-panel--hidden", !sessionContext);
     this.updateModeUi();
     this.renderHistory();
+
+    if (sessionContext) {
+      const goalCopy = this.formatGoalCopy(sessionContext.goal);
+      this.remoteSessionTitle.textContent =
+        sessionContext.title ??
+        (sessionContext.type === "daily" ? `Daily ${sessionContext.date}` : `Challenge ${sessionContext.code}`);
+      this.remoteSessionCopy.textContent = goalCopy || `Seed ${sessionContext.seed ?? this.engine.sessionConfig.seed}`;
+    } else {
+      this.remoteSessionTitle.textContent = "";
+      this.remoteSessionCopy.textContent = "";
+    }
 
     if (this.replayPlayer && this.watchSession?.replay) {
       const watchedReplay = this.watchSession.replay;
@@ -2264,9 +2394,10 @@ export class RussianBlockApp {
     const latestSubmission =
       latestRun && this.lastRemoteSubmission?.runId === latestRun.id ? this.lastRemoteSubmission : null;
     const leaderboardContext = latestSubmission?.context ?? this.activeRemoteSession;
+    const goalEvaluation = latestRun ? this.evaluateRemoteGoal(leaderboardContext, latestRun) : null;
     if (this.engine.mode === "completed") {
       this.resultEyebrow.textContent = "Completed";
-      this.resultTitle.textContent = "挑战完成";
+      this.resultTitle.textContent = goalEvaluation?.passed === false ? "Challenge Missed" : "挑战完成";
     } else {
       this.resultEyebrow.textContent = "Game Over";
       this.resultTitle.textContent = "堆到顶了";
@@ -2280,6 +2411,21 @@ export class RussianBlockApp {
         <div class="result-chip"><strong>${latestRun.combo}</strong><span>最佳连击</span></div>
       `
       : "";
+    if (leaderboardContext) {
+      this.resultGrid.innerHTML += `
+        <div class="result-chip"><strong>${safeText(
+          leaderboardContext.title ??
+            (leaderboardContext.type === "daily" ? leaderboardContext.date : leaderboardContext.code)
+        )}</strong><span>${leaderboardContext.type === "daily" ? "Daily" : "Challenge"}</span></div>
+        <div class="result-chip"><strong>${safeText(this.formatGoalCopy(leaderboardContext.goal) || "Seed run")}</strong><span>Target</span></div>
+      `;
+    }
+    if (goalEvaluation) {
+      this.resultGrid.innerHTML += `
+        <div class="result-chip"><strong>${goalEvaluation.passed ? "Goal reached" : "Goal missed"}</strong><span>Status</span></div>
+        <div class="result-chip"><strong>${safeText(goalEvaluation.copy)}</strong><span>Delta</span></div>
+      `;
+    }
     if (latestSubmission) {
       this.resultGrid.innerHTML += `
         <div class="result-chip"><strong>${safeText(
@@ -2321,8 +2467,11 @@ export class RussianBlockApp {
           .slice(0, 5)
           .map((entry, index) => {
             const name = String(entry.nickname ?? "").trim() || "Anonymous";
+            const isActive =
+              Boolean(latestSubmission?.replayCode) &&
+              String(entry.replay_code ?? entry.replayCode ?? "") === String(latestSubmission.replayCode);
             return `
-              <div class="leaderboard-row">
+              <div class="leaderboard-row${isActive ? " leaderboard-row--active" : ""}">
                 <span class="leaderboard-rank">#${index + 1}</span>
                 <div class="leaderboard-copy">
                   <strong>${safeText(name)}</strong>
@@ -2333,6 +2482,25 @@ export class RussianBlockApp {
             `;
           })
           .join("");
+        if (this.remoteLeaderboard?.currentRank?.rank && this.remoteLeaderboard.currentRank.rank > 5) {
+          const currentName =
+            String(
+              this.remoteLeaderboard.currentRank.nickname ??
+                latestSubmission?.payload?.nickname ??
+                this.settings.nickname ??
+                "Anonymous"
+            ).trim() || "Anonymous";
+          this.leaderboardList.innerHTML += `
+            <div class="leaderboard-row leaderboard-row--active">
+              <span class="leaderboard-rank">#${this.remoteLeaderboard.currentRank.rank}</span>
+              <div class="leaderboard-copy">
+                <strong>${safeText(currentName)}</strong>
+                <span>Your latest run</span>
+              </div>
+              <span class="leaderboard-score">${formatScore(Number(this.remoteLeaderboard.currentRank.score) || 0)}</span>
+            </div>
+          `;
+        }
       }
     } else {
       this.leaderboardTitle.textContent = "排行榜";

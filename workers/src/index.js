@@ -30,7 +30,7 @@ function normalizeReplaySummary(replay) {
 }
 
 async function getReplay(env, code) {
-  return env.DB.prepare("SELECT code, replay_json FROM replays WHERE code = ?")
+  return env.DB.prepare("SELECT code, replay_json, summary_json FROM replays WHERE code = ?")
     .bind(code)
     .first();
 }
@@ -74,6 +74,7 @@ async function handleGetReplay(env, code) {
   return json({
     code,
     replay: JSON.parse(replayRow.replay_json),
+    summary: JSON.parse(replayRow.summary_json),
   });
 }
 
@@ -209,15 +210,64 @@ async function handleSubmitDaily(request, env, date) {
   return json({ ok: true, date });
 }
 
-async function handleGetLeaderboard(env, board) {
+async function handleGetLeaderboard(env, board, current = {}) {
   const rows = await env.DB.prepare(
-    "SELECT nickname, score, lines, duration_ms, created_at FROM submissions WHERE challenge_code = ? ORDER BY score DESC, duration_ms ASC LIMIT 20"
+    "SELECT nickname, score, lines, duration_ms, replay_code, created_at FROM submissions WHERE challenge_code = ? ORDER BY score DESC, duration_ms ASC LIMIT 20"
   )
     .bind(board)
     .all();
+  const totalRow = await env.DB.prepare("SELECT COUNT(*) AS total FROM submissions WHERE challenge_code = ?")
+    .bind(board)
+    .first();
+
+  let currentRank = null;
+  const hasCurrentSubmission =
+    (
+      current.replayCode !== null &&
+      current.replayCode !== undefined &&
+      current.replayCode !== ""
+    ) ||
+    (current.score !== null && current.score !== undefined);
+  let rankScore = Number(current.score) || 0;
+  let rankDurationMs = Number(current.durationMs) || 0;
+  let rankReplayCode = current.replayCode ? String(current.replayCode) : null;
+
+  if (rankReplayCode) {
+    const storedRow = await env.DB.prepare(
+      "SELECT replay_code, score, duration_ms FROM submissions WHERE challenge_code = ? AND replay_code = ? ORDER BY id DESC LIMIT 1"
+    )
+      .bind(board, rankReplayCode)
+      .first();
+    if (storedRow) {
+      rankScore = Number(storedRow.score) || 0;
+      rankDurationMs = Number(storedRow.duration_ms) || 0;
+      rankReplayCode = storedRow.replay_code;
+    }
+  }
+
+  if (hasCurrentSubmission) {
+    const betterRow = await env.DB.prepare(
+      "SELECT COUNT(*) AS better_count FROM submissions WHERE challenge_code = ? AND (score > ? OR (score = ? AND duration_ms < ?))"
+    )
+      .bind(board, rankScore, rankScore, rankDurationMs)
+      .first();
+    const rank = Number(betterRow?.better_count) + 1;
+    if (Number.isFinite(rank)) {
+      currentRank = {
+        rank,
+        replayCode: rankReplayCode,
+        score: rankScore,
+        durationMs: rankDurationMs,
+        nickname: current.nickname ? String(current.nickname) : null,
+      };
+    }
+  }
+
   return json({
     board,
     entries: rows.results ?? [],
+    total: Number(totalRow?.total) || 0,
+    currentRank,
   });
 }
 
@@ -306,7 +356,12 @@ export default {
     }
 
     if (request.method === "GET" && segments[1] === "leaderboards" && segments[2]) {
-      return handleGetLeaderboard(env, segments[2]);
+      return handleGetLeaderboard(env, segments[2], {
+        replayCode: url.searchParams.get("replayCode"),
+        score: url.searchParams.get("score"),
+        durationMs: url.searchParams.get("durationMs"),
+        nickname: url.searchParams.get("nickname"),
+      });
     }
 
     if (request.method === "POST" && segments[1] === "puzzles" && segments.length === 2) {

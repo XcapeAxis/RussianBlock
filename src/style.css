@@ -449,6 +449,11 @@ input {
   gap: 12px;
 }
 
+.leaderboard-row--active {
+  border-color: color-mix(in srgb, var(--accent) 66%, transparent);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent-soft) 34%, transparent);
+}
+
 .leaderboard-rank,
 .leaderboard-score {
   font-weight: 700;
@@ -514,6 +519,34 @@ input {
 
 .watch-panel--hidden {
   display: none;
+}
+
+.remote-session-panel {
+  position: absolute;
+  left: 18px;
+  right: 18px;
+  top: 86px;
+  padding: 14px 18px;
+  border-radius: 20px;
+  background: color-mix(in srgb, var(--panel) 94%, transparent);
+  border: 1px solid color-mix(in srgb, var(--panel-border) 88%, transparent);
+  box-shadow: var(--shadow);
+  z-index: 6;
+}
+
+.remote-session-panel--hidden {
+  display: none;
+}
+
+.remote-session-panel strong {
+  display: block;
+  color: var(--text);
+}
+
+.remote-session-panel p {
+  margin: 6px 0 0;
+  color: var(--muted);
+  font-size: 13px;
 }
 
 .watch-panel strong {
@@ -718,6 +751,12 @@ input {
     left: 10px;
     right: 10px;
     bottom: 124px;
+  }
+
+  .remote-session-panel {
+    left: 10px;
+    right: 10px;
+    top: 70px;
   }
 }
 
