@@ -1,4 +1,5 @@
 import fs from "node:fs";
+import http from "node:http";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -23,6 +24,138 @@ function getServerUrl(server) {
     throw new Error("Unable to determine the test server address.");
   }
   return `http://127.0.0.1:${address.port}`;
+}
+
+function sendJson(response, statusCode, payload) {
+  response.writeHead(statusCode, {
+    "Content-Type": "application/json; charset=utf-8",
+    "Access-Control-Allow-Origin": "*",
+    "Access-Control-Allow-Methods": "GET,POST,OPTIONS",
+    "Access-Control-Allow-Headers": "Content-Type",
+  });
+  response.end(JSON.stringify(payload));
+}
+
+async function readRequestBody(request) {
+  const chunks = [];
+  for await (const chunk of request) {
+    chunks.push(chunk);
+  }
+  if (chunks.length === 0) {
+    return {};
+  }
+  try {
+    return JSON.parse(Buffer.concat(chunks).toString("utf8"));
+  } catch {
+    return {};
+  }
+}
+
+async function startMockApiServer(appBaseUrl) {
+  const state = {
+    replayUploads: [],
+    challengeSubmissions: [],
+    dailySubmissions: [],
+  };
+
+  const server = http.createServer(async (request, response) => {
+    if (!request.url) {
+      sendJson(response, 404, { error: "Missing URL" });
+      return;
+    }
+
+    if (request.method === "OPTIONS") {
+      sendJson(response, 200, { ok: true });
+      return;
+    }
+
+    const url = new URL(request.url, "http://127.0.0.1");
+    const segments = url.pathname.split("/").filter(Boolean);
+
+    if (request.method === "POST" && segments[0] === "api" && segments[1] === "replays" && segments.length === 2) {
+      const body = await readRequestBody(request);
+      const code = `R${state.replayUploads.length + 1}`;
+      state.replayUploads.push(body.replay ?? null);
+      sendJson(response, 200, {
+        code,
+        url: `${appBaseUrl}?watch=replay&code=${code}`,
+      });
+      return;
+    }
+
+    if (request.method === "GET" && segments[0] === "api" && segments[1] === "challenges" && segments.length === 3) {
+      sendJson(response, 200, {
+        code: segments[2],
+        mode: "ultra",
+        seed: "shared-ultra-seed",
+        title: "Mock challenge",
+      });
+      return;
+    }
+
+    if (
+      request.method === "POST" &&
+      segments[0] === "api" &&
+      segments[1] === "challenges" &&
+      segments[2] &&
+      segments[3] === "submissions"
+    ) {
+      const body = await readRequestBody(request);
+      state.challengeSubmissions.push({
+        code: segments[2],
+        ...body,
+      });
+      sendJson(response, 200, { ok: true, challengeCode: segments[2] });
+      return;
+    }
+
+    if (request.method === "GET" && segments[0] === "api" && segments[1] === "daily" && segments.length === 3) {
+      sendJson(response, 200, {
+        date: segments[2],
+        challenge: {
+          mode: "ultra",
+          seed: `daily-ultra-${segments[2]}`,
+        },
+      });
+      return;
+    }
+
+    if (
+      request.method === "POST" &&
+      segments[0] === "api" &&
+      segments[1] === "daily" &&
+      segments[2] &&
+      segments[3] === "submissions"
+    ) {
+      const body = await readRequestBody(request);
+      state.dailySubmissions.push({
+        date: segments[2],
+        ...body,
+      });
+      sendJson(response, 200, { ok: true, date: segments[2] });
+      return;
+    }
+
+    sendJson(response, 404, { error: "Not found" });
+  });
+
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  return {
+    server,
+    state,
+    baseUrl: getServerUrl(server),
+  };
+}
+
+async function waitForCondition(predicate, timeoutMs, description) {
+  const start = Date.now();
+  while (Date.now() - start <= timeoutMs) {
+    if (predicate()) {
+      return;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+  throw new Error(`Timed out waiting for ${description}`);
 }
 
 function runEngineSmokeTests() {
@@ -472,6 +605,90 @@ async function runMobileGestureLoop(baseUrl, playwright) {
   }
 }
 
+async function runSharingFlowLoop(baseUrl, playwright) {
+  const { chromium } = playwright;
+  const mockApi = await startMockApiServer(baseUrl);
+  const browser = await chromium.launch({ headless: true });
+  const context = await browser.newContext({
+    locale: "zh-CN",
+    viewport: { width: 1280, height: 900 },
+  });
+  const page = await context.newPage();
+  const consoleErrors = [];
+  attachConsoleCapture(page, consoleErrors);
+  await page.addInitScript((apiBase) => {
+    window.localStorage.setItem(
+      "russian-block-settings",
+      JSON.stringify({
+        bestScore: 0,
+        muted: false,
+        themeId: "classic",
+        lastMode: "marathon",
+        lastSeed: "starter-seed",
+        autoStartLastMode: false,
+        ghostEnabled: true,
+        apiBase,
+      })
+    );
+  }, mockApi.baseUrl);
+
+  try {
+    const getState = () => page.evaluate(() => JSON.parse(window.render_game_to_text()));
+
+    await page.goto(`${baseUrl}?play=challenge&code=CDEMO1`, { waitUntil: "networkidle" });
+    await page.waitForFunction(() => JSON.parse(window.render_game_to_text()).mode === "playing");
+    let state = await getState();
+    assert(state.gameMode === "ultra", "Challenge route should start the configured challenge mode");
+    assert(state.seed === "shared-ultra-seed", "Challenge route should load the shared seed");
+    await page.evaluate(() => window.advanceTime(120000));
+    await page.waitForFunction(() => JSON.parse(window.render_game_to_text()).mode === "completed");
+    await waitForCondition(() => mockApi.state.challengeSubmissions.length === 1, 3000, "challenge submission");
+    assert(mockApi.state.replayUploads.length === 1, "Challenge completion should upload a replay before submission");
+    assert(
+      mockApi.state.challengeSubmissions[0].code === "CDEMO1",
+      "Challenge submission should target the active challenge code"
+    );
+    assert(
+      mockApi.state.challengeSubmissions[0].replayCode === "R1",
+      "Challenge submission should include the uploaded replay code"
+    );
+    await expectResultText(page, /已提交/);
+
+    await page.goto(`${baseUrl}?menu=1`, { waitUntil: "networkidle" });
+    await page.locator("#load-daily-btn").click();
+    await page.waitForFunction(() => JSON.parse(window.render_game_to_text()).mode === "playing");
+    state = await getState();
+    assert(state.gameMode === "ultra", "Daily challenge should start a playable configured mode");
+    assert(/^daily-ultra-\d{4}-\d{2}-\d{2}$/.test(state.seed), "Daily challenge should load the server-provided seed");
+    await page.evaluate(() => window.advanceTime(120000));
+    await page.waitForFunction(() => JSON.parse(window.render_game_to_text()).mode === "completed");
+    await waitForCondition(() => mockApi.state.dailySubmissions.length === 1, 3000, "daily submission");
+    assert(mockApi.state.replayUploads.length === 2, "Daily completion should upload its replay");
+    assert(
+      mockApi.state.dailySubmissions[0].replayCode === "R2",
+      "Daily submission should include the uploaded replay code"
+    );
+
+    if (consoleErrors.length > 0) {
+      throw new Error(`Sharing Playwright loop produced console errors:\n${consoleErrors.join("\n")}`);
+    }
+  } finally {
+    await context.close();
+    await browser.close();
+    await new Promise((resolve) => mockApi.server.close(resolve));
+  }
+}
+
+async function expectResultText(page, pattern) {
+  await page.waitForFunction(
+    (expectedPatternSource) => {
+      const target = document.querySelector("#gameover-overlay");
+      return Boolean(target && new RegExp(expectedPatternSource).test(target.textContent ?? ""));
+    },
+    pattern.source
+  );
+}
+
 async function tryRunPlaywrightLoop(baseUrl) {
   let playwright;
   try {
@@ -486,6 +703,7 @@ async function tryRunPlaywrightLoop(baseUrl) {
   await runDesktopSkillClient(baseUrl);
   await runThemeLoop(baseUrl, playwright);
   await runMobileGestureLoop(baseUrl, playwright);
+  await runSharingFlowLoop(baseUrl, playwright);
 }
 
 buildProject({ outDir: testDistDir });

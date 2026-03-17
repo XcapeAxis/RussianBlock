@@ -190,6 +190,8 @@ export class RussianBlockApp {
     this.selectedGameMode = sanitizeGameMode(this.settings.lastMode);
     this.selectedSeed = this.settings.lastSeed;
     this.statusMessage = "";
+    this.activeRemoteSession = null;
+    this.lastRemoteSubmission = null;
 
     this.horizontalState = {
       left: createHoldState(),
@@ -558,6 +560,21 @@ export class RussianBlockApp {
     });
   }
 
+  setRemoteSession(context) {
+    this.activeRemoteSession = context ? { ...context } : null;
+    this.lastRemoteSubmission = null;
+  }
+
+  buildRemoteSubmissionPayload(runSummary, replayCode) {
+    return {
+      replayCode,
+      nickname: null,
+      score: runSummary.score,
+      lines: runSummary.lines,
+      durationMs: runSummary.durationMs,
+    };
+  }
+
   beginRecordingSession() {
     this.activeRecorder = new ReplayRecorder({
       themeId: this.theme.id,
@@ -616,6 +633,66 @@ export class RussianBlockApp {
     this.profile = recordRun(this.profile, this.lastRunSummary, replay);
     saveProfile(this.profile);
     this.activeRecorder = null;
+    void this.submitRunIfNeeded(this.lastRunSummary, replay);
+  }
+
+  async submitRunIfNeeded(runSummary, replay) {
+    if (!runSummary || !replay || !this.activeRemoteSession) {
+      return;
+    }
+    if (this.lastRemoteSubmission?.runId === runSummary.id) {
+      return;
+    }
+
+    const context = { ...this.activeRemoteSession };
+    if (!this.apiClient.configured) {
+      this.lastRemoteSubmission = {
+        runId: runSummary.id,
+        status: "error",
+        context,
+      };
+      this.statusMessage = "分享 API 不可用，本局成绩未提交。";
+      this.updateUiState();
+      return;
+    }
+
+    this.lastRemoteSubmission = {
+      runId: runSummary.id,
+      status: "pending",
+      context,
+    };
+    this.statusMessage =
+      context.type === "daily"
+        ? `正在提交今日挑战 ${context.date} 的成绩…`
+        : `正在提交挑战 ${context.code} 的成绩…`;
+    this.updateUiState();
+
+    try {
+      const replayResponse = await this.apiClient.uploadReplay(replay);
+      const payload = this.buildRemoteSubmissionPayload(runSummary, replayResponse.code);
+      if (context.type === "daily") {
+        await this.apiClient.submitDaily(context.date, payload);
+        this.statusMessage = `今日挑战 ${context.date} 成绩已提交。`;
+      } else {
+        await this.apiClient.submitChallenge(context.code, payload);
+        this.statusMessage = `挑战 ${context.code} 成绩已提交。`;
+      }
+      this.lastRemoteSubmission = {
+        runId: runSummary.id,
+        status: "success",
+        context,
+        replayCode: replayResponse.code,
+      };
+    } catch (error) {
+      this.lastRemoteSubmission = {
+        runId: runSummary.id,
+        status: "error",
+        context,
+      };
+      this.statusMessage = error instanceof Error ? error.message : "成绩提交失败。";
+    }
+
+    this.updateUiState();
   }
 
   exportReplay() {
@@ -799,7 +876,14 @@ export class RussianBlockApp {
       this.startGame({
         gameMode: sanitizeGameMode(challenge.mode ?? "seed_challenge"),
         seed: challenge.seed,
+        remoteContext: {
+          type: "challenge",
+          code: normalizedCode,
+          title: challenge.title ?? normalizedCode,
+        },
       });
+      this.statusMessage = `已载入挑战 ${normalizedCode}。`;
+      this.updateUiState();
     } catch (error) {
       this.statusMessage = error instanceof Error ? error.message : "载入挑战失败。";
       this.updateUiState();
@@ -849,7 +933,14 @@ export class RussianBlockApp {
       this.startGame({
         gameMode: sanitizeGameMode(daily.mode ?? "seed_challenge"),
         seed: daily.seed,
+        remoteContext: {
+          type: "daily",
+          date,
+          title: `今日挑战 ${date}`,
+        },
       });
+      this.statusMessage = `今日挑战 ${date} 已就绪。`;
+      this.updateUiState();
     } catch (error) {
       this.statusMessage = error instanceof Error ? error.message : "载入今日挑战失败。";
       this.updateUiState();
@@ -1318,6 +1409,7 @@ export class RussianBlockApp {
     this.clearPendingTouchTap();
     this.releaseGestureInput();
     this.statusMessage = "";
+    this.setRemoteSession(overrides.remoteContext ?? null);
     const config = this.createGameConfig(overrides);
     this.selectedGameMode = config.gameMode;
     this.selectedSeed = config.seed;
@@ -1363,6 +1455,7 @@ export class RussianBlockApp {
     this.clearPendingTouchTap();
     this.releaseGestureInput();
     this.statusMessage = "";
+    this.lastRemoteSubmission = null;
     this.engine.restart();
     this.beginRecordingSession();
     this.audio.play("click");
@@ -1385,6 +1478,7 @@ export class RussianBlockApp {
     this.clearPendingTouchTap();
     this.releaseGestureInput();
     this.statusMessage = "";
+    this.setRemoteSession(null);
     this.engine.resetToMenu();
     this.audio.play("click");
     this.afterStateChange();
@@ -1555,6 +1649,8 @@ export class RussianBlockApp {
     this.renderHistory();
 
     const latestRun = this.lastRunSummary ?? this.profile.runs[0] ?? null;
+    const latestSubmission =
+      latestRun && this.lastRemoteSubmission?.runId === latestRun.id ? this.lastRemoteSubmission : null;
     if (this.engine.mode === "completed") {
       this.resultEyebrow.textContent = "Completed";
       this.resultTitle.textContent = "挑战完成";
@@ -1571,6 +1667,22 @@ export class RussianBlockApp {
         <div class="result-chip"><strong>${latestRun.combo}</strong><span>最佳连击</span></div>
       `
       : "";
+    if (latestSubmission) {
+      this.resultGrid.innerHTML += `
+        <div class="result-chip"><strong>${safeText(
+          latestSubmission.context.type === "daily"
+            ? latestSubmission.context.date
+            : latestSubmission.context.code
+        )}</strong><span>${latestSubmission.context.type === "daily" ? "今日挑战" : "挑战码"}</span></div>
+        <div class="result-chip"><strong>${
+          latestSubmission.status === "success"
+            ? "已提交"
+            : latestSubmission.status === "pending"
+              ? "提交中"
+              : "失败"
+        }</strong><span>分享状态</span></div>
+      `;
+    }
     this.statusCopy.textContent =
       this.statusMessage ||
       `当前模式最佳 ${formatScore(getBestScoreForMode(this.profile, this.selectedGameMode))} 分。`;

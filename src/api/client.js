@@ -69,4 +69,11 @@ export class RussianBlockApiClient {
   getDaily(date) {
     return this.request(`/api/daily/${encodeURIComponent(date)}`);
   }
+
+  submitDaily(date, payload) {
+    return this.request(`/api/daily/${encodeURIComponent(date)}/submissions`, {
+      method: "POST",
+      body: payload,
+    });
+  }
 }
