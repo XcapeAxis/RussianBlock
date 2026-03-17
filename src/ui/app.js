@@ -416,6 +416,12 @@ export class RussianBlockApp {
     this.replayBanner = this.root.querySelector("#replay-banner");
     this.replayTitle = this.root.querySelector("#replay-title");
     this.replayCopy = this.root.querySelector("#replay-copy");
+    this.shareCardButton = document.createElement("button");
+    this.shareCardButton.type = "button";
+    this.shareCardButton.className = "secondary-btn";
+    this.shareCardButton.id = "share-card-btn";
+    this.shareCardButton.textContent = "分享成绩卡";
+    this.root.querySelector("#share-run-btn").insertAdjacentElement("afterend", this.shareCardButton);
   }
 
   bindEvents() {
@@ -437,6 +443,7 @@ export class RussianBlockApp {
     this.root.querySelector("#replay-full-btn").addEventListener("click", () => this.replayLastRun());
     this.root.querySelector("#replay-clip-btn").addEventListener("click", () => this.replayLastClip());
     this.root.querySelector("#share-run-btn").addEventListener("click", () => this.shareLastReplay());
+    this.shareCardButton.addEventListener("click", () => void this.shareResultCard());
     this.root.querySelector("#challenge-run-btn").addEventListener("click", () => this.createChallengeFromLastRun());
     this.root.querySelector("#replay-restart-btn").addEventListener("click", () => this.restartReplay());
     this.root.querySelector("#exit-replay-btn").addEventListener("click", () => this.stopReplay());
@@ -817,6 +824,218 @@ export class RussianBlockApp {
       this.statusMessage = error instanceof Error ? error.message : "上传回放失败。";
     }
     this.updateUiState();
+  }
+
+  getLatestResultForSharing() {
+    return this.lastRunSummary ?? this.profile.runs[0] ?? null;
+  }
+
+  getSubmissionForRun(runSummary) {
+    return runSummary && this.lastRemoteSubmission?.runId === runSummary.id ? this.lastRemoteSubmission : null;
+  }
+
+  drawShareCardStat(ctx, x, y, width, height, value, label) {
+    ctx.save();
+    ctx.fillStyle = "rgba(255, 255, 255, 0.06)";
+    fillRoundedRect(ctx, x, y, width, height, 26);
+    ctx.strokeStyle = "rgba(255, 255, 255, 0.08)";
+    ctx.lineWidth = 1;
+    strokeRoundedRect(ctx, x, y, width, height, 26);
+    ctx.fillStyle = this.theme.canvas.textPrimary;
+    ctx.font = "700 56px 'Trebuchet MS', 'Segoe UI', sans-serif";
+    ctx.fillText(String(value), x + 28, y + 74);
+    ctx.fillStyle = this.theme.canvas.textMuted;
+    ctx.font = "600 24px 'Trebuchet MS', 'Segoe UI', sans-serif";
+    ctx.fillText(label, x + 28, y + height - 24);
+    ctx.restore();
+  }
+
+  drawShareCardGem(ctx, x, y, size, pieceType) {
+    const piece = this.theme.pieces[pieceType];
+    const gradient = ctx.createLinearGradient(x, y, x + size, y + size);
+    gradient.addColorStop(0, piece.highlight);
+    gradient.addColorStop(0.48, piece.fill);
+    gradient.addColorStop(1, piece.shade);
+    ctx.save();
+    ctx.shadowColor = piece.glow;
+    ctx.shadowBlur = 26;
+    ctx.fillStyle = gradient;
+    fillRoundedRect(ctx, x, y, size, size, size * 0.24);
+    ctx.shadowBlur = 0;
+    ctx.strokeStyle = piece.edge;
+    ctx.lineWidth = Math.max(3, size * 0.06);
+    strokeRoundedRect(ctx, x + 3, y + 3, size - 6, size - 6, size * 0.2);
+    ctx.fillStyle = piece.specular;
+    fillRoundedRect(ctx, x + size * 0.16, y + size * 0.14, size * 0.42, size * 0.18, size * 0.08);
+    ctx.restore();
+  }
+
+  async shareResultCard() {
+    const runSummary = this.getLatestResultForSharing();
+    if (!runSummary) {
+      this.statusMessage = "先完成一局，才能生成成绩卡。";
+      this.updateUiState();
+      return;
+    }
+
+    try {
+      const asset = await this.buildShareCardAsset(runSummary);
+      const shareTitle = `${runSummary.label} ${formatScore(runSummary.score)} 分`;
+      if (
+        typeof navigator.share === "function" &&
+        typeof navigator.canShare === "function" &&
+        typeof File === "function"
+      ) {
+        const file = new File([asset.blob], asset.fileName, { type: "image/png" });
+        if (navigator.canShare({ files: [file] })) {
+          await navigator.share({
+            title: shareTitle,
+            text: "Russian Block 成绩卡",
+            files: [file],
+          });
+          this.statusMessage = "成绩卡已调起系统分享。";
+          this.updateUiState();
+          return;
+        }
+      }
+
+      const objectUrl = URL.createObjectURL(asset.blob);
+      const anchor = document.createElement("a");
+      anchor.href = objectUrl;
+      anchor.download = asset.fileName;
+      document.body.append(anchor);
+      anchor.click();
+      anchor.remove();
+      window.setTimeout(() => URL.revokeObjectURL(objectUrl), 2000);
+      this.statusMessage = "成绩卡已导出为 PNG。";
+    } catch (error) {
+      this.statusMessage = error instanceof Error ? error.message : "生成成绩卡失败。";
+    }
+
+    this.updateUiState();
+  }
+
+  async buildShareCardAsset(runSummary) {
+    const width = 1200;
+    const height = 1600;
+    const canvas = document.createElement("canvas");
+    canvas.width = width;
+    canvas.height = height;
+    const ctx = canvas.getContext("2d");
+    if (!ctx) {
+      throw new Error("Share card canvas is unavailable.");
+    }
+
+    const submission = this.getSubmissionForRun(runSummary);
+    const pageUrl = `${window.location.origin}${window.location.pathname}`;
+    const background = ctx.createLinearGradient(0, 0, width, height);
+    background.addColorStop(0, this.theme.canvas.backgroundStart);
+    background.addColorStop(1, this.theme.canvas.backgroundEnd);
+    ctx.fillStyle = background;
+    ctx.fillRect(0, 0, width, height);
+
+    ctx.save();
+    ctx.globalAlpha = 0.18;
+    const halo = ctx.createRadialGradient(width * 0.18, height * 0.16, 10, width * 0.18, height * 0.16, 320);
+    halo.addColorStop(0, this.theme.canvas.accent);
+    halo.addColorStop(1, "transparent");
+    ctx.fillStyle = halo;
+    ctx.fillRect(0, 0, width, height);
+    ctx.restore();
+
+    ctx.save();
+    ctx.globalAlpha = 0.16;
+    const haloTwo = ctx.createRadialGradient(width * 0.82, height * 0.2, 10, width * 0.82, height * 0.2, 280);
+    haloTwo.addColorStop(0, this.theme.canvas.statsAccent);
+    haloTwo.addColorStop(1, "transparent");
+    ctx.fillStyle = haloTwo;
+    ctx.fillRect(0, 0, width, height);
+    ctx.restore();
+
+    ctx.fillStyle = this.theme.ui.panel;
+    fillRoundedRect(ctx, 72, 72, width - 144, height - 144, 56);
+    ctx.strokeStyle = this.theme.ui.panelBorder;
+    ctx.lineWidth = 2;
+    strokeRoundedRect(ctx, 72, 72, width - 144, height - 144, 56);
+
+    this.drawShareCardGem(ctx, 860, 128, 136, "T");
+    this.drawShareCardGem(ctx, 930, 248, 92, "I");
+    this.drawShareCardGem(ctx, 112, 1220, 118, "O");
+    this.drawShareCardGem(ctx, 226, 1278, 84, "S");
+
+    ctx.fillStyle = this.theme.canvas.textMuted;
+    ctx.font = "700 28px 'Trebuchet MS', 'Segoe UI', sans-serif";
+    ctx.fillText(this.theme.preview.badge, 132, 146);
+
+    ctx.fillStyle = this.theme.canvas.textPrimary;
+    ctx.font = "700 82px 'Trebuchet MS', 'Segoe UI', sans-serif";
+    ctx.fillText("Russian Block", 128, 230);
+
+    ctx.fillStyle = this.theme.canvas.accentSoft;
+    ctx.font = "700 34px 'Trebuchet MS', 'Segoe UI', sans-serif";
+    ctx.fillText(runSummary.label, 132, 300);
+
+    ctx.fillStyle = this.theme.canvas.textMuted;
+    ctx.font = "600 28px 'Trebuchet MS', 'Segoe UI', sans-serif";
+    ctx.fillText(runSummary.outcome === "completed" ? "Completed Run" : "Score Run", 132, 344);
+
+    ctx.fillStyle = this.theme.canvas.textMuted;
+    ctx.font = "600 26px 'Trebuchet MS', 'Segoe UI', sans-serif";
+    ctx.fillText("Score", 132, 448);
+    ctx.fillStyle = this.theme.canvas.textPrimary;
+    ctx.font = "700 156px 'Trebuchet MS', 'Segoe UI', sans-serif";
+    ctx.fillText(formatScore(runSummary.score), 128, 590);
+
+    this.drawShareCardStat(ctx, 128, 680, 292, 154, runSummary.lines, "Lines");
+    this.drawShareCardStat(ctx, 454, 680, 292, 154, formatDuration(runSummary.durationMs), "Duration");
+    this.drawShareCardStat(ctx, 780, 680, 292, 154, runSummary.combo, "Best Combo");
+
+    this.drawShareCardStat(ctx, 128, 870, 438, 154, this.theme.name, "Theme");
+    this.drawShareCardStat(ctx, 600, 870, 472, 154, runSummary.seed || "AUTO", "Seed");
+
+    if (submission) {
+      const badgeText =
+        submission.context.type === "daily"
+          ? `Daily ${submission.context.date}`
+          : `Challenge ${submission.context.code}`;
+      ctx.fillStyle = "rgba(255, 255, 255, 0.08)";
+      fillRoundedRect(ctx, 128, 1080, 944, 94, 28);
+      ctx.fillStyle = this.theme.canvas.accentSoft;
+      ctx.font = "700 34px 'Trebuchet MS', 'Segoe UI', sans-serif";
+      ctx.fillText(badgeText, 160, 1140);
+      ctx.fillStyle = this.theme.canvas.textMuted;
+      ctx.font = "600 24px 'Trebuchet MS', 'Segoe UI', sans-serif";
+      ctx.fillText(
+        submission.status === "success" ? "Submission synced" : "Submission pending",
+        160,
+        1108
+      );
+    }
+
+    ctx.fillStyle = this.theme.canvas.textMuted;
+    ctx.font = "600 28px 'Trebuchet MS', 'Segoe UI', sans-serif";
+    ctx.fillText("Play the same board in your browser", 132, 1340);
+    ctx.fillStyle = this.theme.canvas.textPrimary;
+    ctx.font = "700 34px 'Trebuchet MS', 'Segoe UI', sans-serif";
+    ctx.fillText(pageUrl, 132, 1398);
+
+    ctx.fillStyle = this.theme.canvas.footer;
+    ctx.font = "600 24px 'Trebuchet MS', 'Segoe UI', sans-serif";
+    ctx.fillText(
+      `Best ${formatScore(this.engine.bestScore)} · Level ${runSummary.level} · ${new Date(runSummary.createdAt).toLocaleDateString("zh-CN")}`,
+      132,
+      1490
+    );
+
+    const blob = await new Promise((resolve) => canvas.toBlob(resolve, "image/png"));
+    if (!blob) {
+      throw new Error("Failed to export share card.");
+    }
+
+    return {
+      blob,
+      fileName: `russian-block-${runSummary.gameMode}-${runSummary.score}.png`,
+    };
   }
 
   async createChallengeFromLastRun() {

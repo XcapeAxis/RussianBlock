@@ -610,6 +610,7 @@ async function runSharingFlowLoop(baseUrl, playwright) {
   const mockApi = await startMockApiServer(baseUrl);
   const browser = await chromium.launch({ headless: true });
   const context = await browser.newContext({
+    acceptDownloads: true,
     locale: "zh-CN",
     viewport: { width: 1280, height: 900 },
   });
@@ -653,6 +654,20 @@ async function runSharingFlowLoop(baseUrl, playwright) {
       "Challenge submission should include the uploaded replay code"
     );
     await expectResultText(page, /已提交/);
+    await page.evaluate(() => {
+      try {
+        Object.defineProperty(navigator, "share", { configurable: true, value: undefined });
+        Object.defineProperty(navigator, "canShare", { configurable: true, value: undefined });
+      } catch {
+        // Ignore environments that do not allow overriding navigator methods.
+      }
+    });
+    const downloadPromise = page.waitForEvent("download");
+    await page.locator("#share-card-btn").click();
+    const download = await downloadPromise;
+    const downloadPath = await download.path();
+    assert(download.suggestedFilename().endsWith(".png"), "Share card export should download a PNG file");
+    assert(Boolean(downloadPath), "Share card export should produce a downloadable file");
 
     await page.goto(`${baseUrl}?menu=1`, { waitUntil: "networkidle" });
     await page.locator("#load-daily-btn").click();
