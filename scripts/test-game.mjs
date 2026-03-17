@@ -54,6 +54,18 @@ function runEngineSmokeTests() {
   const snapshot = engine.serializeState();
   assert(snapshot.board.length === 20, "Serialized board should expose 20 visible rows");
   assert(Array.isArray(snapshot.nextQueue) && snapshot.nextQueue.length >= 3, "Serialized queue should include previews");
+
+  engine.startNewGame({ gameMode: "ultra", seed: "smoke-ultra" });
+  engine.update(120000);
+  assert(engine.mode === "completed", "Ultra mode should complete when the timer expires");
+
+  engine.startNewGame({ gameMode: "sprint", seed: "smoke-sprint" });
+  engine.lines = 39;
+  engine.level = 4;
+  engine.board[23] = [null, null, null, null, "J", "L", "O", "S", "T", "Z"];
+  engine.activePiece = { type: "I", rotation: 0, x: 0, y: 22 };
+  engine.hardDrop();
+  assert(engine.mode === "completed", "Sprint mode should complete after reaching the target line count");
 }
 
 async function runDesktopSkillClient(baseUrl) {
@@ -82,7 +94,7 @@ async function runDesktopSkillClient(baseUrl) {
         pathToFileURL(bootstrapScript).href,
         clientScript,
         "--url",
-        baseUrl,
+        `${baseUrl}?menu=1`,
         "--actions-file",
         actionsFile,
         "--click-selector",
@@ -226,7 +238,7 @@ async function runThemeLoop(baseUrl, playwright) {
     assert((await getState()).mode === "playing", "Classic theme screenshot run should enter a playable game");
     await page.screenshot({ path: path.join(screenshotDir, "theme-classic.png"), fullPage: false });
 
-    await page.goto(baseUrl, { waitUntil: "networkidle" });
+    await page.goto(`${baseUrl}?menu=1`, { waitUntil: "networkidle" });
     await page.locator('[data-theme-card="ocean"]').click();
     await page.waitForTimeout(80);
     assert((await getActiveThemeId(page)) === "ocean", "Theme card selection should switch to ocean");

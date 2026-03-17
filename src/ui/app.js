@@ -6,14 +6,49 @@ import {
   SOFT_DROP_INTERVAL,
   VISIBLE_ROWS,
 } from "../game/constants.js";
+import { RussianBlockApiClient } from "../api/client.js";
 import { AudioManager } from "../game/audio.js";
 import { TetrisEngine } from "../game/engine.js";
+import { GAME_MODES, PLAYABLE_PHASE_ONE_MODES, buildGameConfig, getModeDefinition, sanitizeGameMode } from "../game/modes.js";
 import { getPieceCells } from "../game/pieces.js";
+import {
+  getBestScoreForMode,
+  getReplayForRun,
+  loadProfile,
+  recordRun,
+  saveProfile,
+} from "../game/progress-storage.js";
+import { ReplayPlayer, ReplayRecorder, buildReplayClip, createRunId } from "../game/replay.js";
 import { loadSettings, saveSettings } from "../game/storage.js";
 import { getTheme, THEMES } from "../game/themes.js";
 
 function formatScore(value) {
   return new Intl.NumberFormat("zh-CN").format(value);
+}
+
+function formatDuration(durationMs) {
+  const totalSeconds = Math.max(0, Math.floor(durationMs / 1000));
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+  return `${String(minutes).padStart(2, "0")}:${String(seconds).padStart(2, "0")}`;
+}
+
+function formatTimer(durationMs) {
+  if (durationMs === null || durationMs === undefined) {
+    return "--:--";
+  }
+  return formatDuration(durationMs);
+}
+
+function safeText(value) {
+  return String(value ?? "").replace(/[&<>"]/g, (token) => {
+    return {
+      "&": "&amp;",
+      "<": "&lt;",
+      ">": "&gt;",
+      '"': "&quot;",
+    }[token];
+  });
 }
 
 function fillRoundedRect(ctx, x, y, width, height, radius) {
@@ -73,6 +108,19 @@ function buildThemeChipsMarkup() {
   ).join("");
 }
 
+function buildModeCardsMarkup() {
+  return PLAYABLE_PHASE_ONE_MODES.map((modeId) => {
+    const mode = GAME_MODES[modeId];
+    return `
+      <button type="button" class="theme-card mode-card" data-mode-card="${mode.id}" aria-pressed="false">
+        <span class="theme-card-badge">${mode.name}</span>
+        <strong>${mode.label}</strong>
+        <span>${mode.description}</span>
+      </button>
+    `;
+  }).join("");
+}
+
 function applyCssVariables(styleTarget, theme) {
   const entries = {
     "--bg-0": theme.ui.bg0,
@@ -121,16 +169,27 @@ export class RussianBlockApp {
   constructor(root) {
     this.root = root;
     this.settings = loadSettings();
+    this.profile = loadProfile();
     this.theme = getTheme(this.settings.themeId);
     this.query = new URLSearchParams(window.location.search);
     this.audio = new AudioManager({ muted: this.settings.muted });
     this.engine = new TetrisEngine({ bestScore: this.settings.bestScore });
+    this.apiClient = new RussianBlockApiClient(this.settings.apiBase);
     this.manualTimeControl = typeof window.advanceTime === "function";
     this.installPrompt = null;
     this.lastTimestamp = 0;
     this.currentLayout = null;
     this.activeGesture = null;
     this.pendingTouchTap = null;
+    this.activeRecorder = null;
+    this.lastReplay = null;
+    this.lastRunSummary = null;
+    this.replayPlayer = null;
+    this.liveEngine = null;
+    this.replayMeta = null;
+    this.selectedGameMode = sanitizeGameMode(this.settings.lastMode);
+    this.selectedSeed = this.settings.lastSeed;
+    this.statusMessage = "";
 
     this.horizontalState = {
       left: createHoldState(),
@@ -150,10 +209,12 @@ export class RussianBlockApp {
     this.applyTheme();
     this.bindEvents();
     if (this.query.get("autostart") === "1") {
-      this.startGame();
+      this.startGame({ gameMode: this.selectedGameMode, seed: this.selectedSeed });
       if (this.query.get("demo") === "1") {
         this.populateDemoBoard();
       }
+    } else if (this.query.get("menu") !== "1" && this.settings.autoStartLastMode) {
+      this.startGame({ gameMode: this.selectedGameMode, seed: this.selectedSeed });
     }
     this.updateUiState();
     this.resizeCanvas();
@@ -167,6 +228,7 @@ export class RussianBlockApp {
     window.advanceTime = (ms) => {
       this.advanceTime(ms);
     };
+    window.exportReplay = () => this.exportReplay();
 
     if ("serviceWorker" in navigator) {
       void navigator.serviceWorker.register("./sw.js").catch(() => {});
@@ -186,7 +248,19 @@ export class RussianBlockApp {
             <div class="overlay-card">
               <span class="eyebrow">Windows / Android Web + PWA</span>
               <h1>Russian Block</h1>
-              <p>经典俄罗斯方块，支持键盘、滑屏手势、离线缓存和本地最高分。</p>
+              <p>经典俄罗斯方块，支持键盘、滑屏手势、离线缓存、模式切换和本地复盘。</p>
+              <div class="theme-showcase">
+                <span class="theme-showcase-label">模式选择</span>
+                <strong id="mode-name"></strong>
+                <p id="mode-description"></p>
+              </div>
+              <div class="theme-carousel" id="mode-carousel">
+                ${buildModeCardsMarkup()}
+              </div>
+              <label class="seed-field" id="seed-field">
+                <span class="theme-showcase-label">Challenge Seed</span>
+                <input type="text" id="seed-input" placeholder="输入固定种子或留空自动生成" />
+              </label>
               <div class="overlay-actions">
                 <button type="button" class="primary-btn" id="start-btn">开始游戏</button>
                 <button type="button" class="secondary-btn" id="fullscreen-btn">全屏</button>
@@ -199,6 +273,15 @@ export class RussianBlockApp {
               <div class="theme-carousel" id="theme-carousel">
                 ${buildThemeCardsMarkup()}
               </div>
+              <div class="menu-summary" id="menu-summary"></div>
+              <div class="menu-history">
+                <div class="menu-history-head">
+                  <span class="theme-showcase-label">最近战绩</span>
+                  <button type="button" class="secondary-btn menu-mini-btn" id="replay-last-btn">回放上一局</button>
+                </div>
+                <div class="history-list" id="history-list"></div>
+              </div>
+              <p class="overlay-hint" id="status-copy"></p>
               <p class="overlay-hint">触屏：左右滑移动，单击旋转，下拖软降，下甩硬降，双击 Hold。键盘：A/D 移动，W 旋转，Space 硬降，C Hold。</p>
             </div>
           </div>
@@ -215,13 +298,27 @@ export class RussianBlockApp {
           </div>
           <div class="overlay overlay--hidden" id="gameover-overlay">
             <div class="overlay-card overlay-card--compact">
-              <span class="eyebrow">Game Over</span>
-              <h2>堆到顶了</h2>
+              <span class="eyebrow" id="result-eyebrow">Game Over</span>
+              <h2 id="result-title">堆到顶了</h2>
               <p id="gameover-copy">再来一局，刷新你的最高分。</p>
+              <div class="result-grid" id="result-grid"></div>
               <div class="overlay-actions">
                 <button type="button" class="primary-btn" id="retry-btn">再来一局</button>
                 <button type="button" class="secondary-btn" id="menu-btn">回到首页</button>
+                <button type="button" class="secondary-btn" id="replay-full-btn">回放本局</button>
+                <button type="button" class="secondary-btn" id="replay-clip-btn">回放最后 8 秒</button>
+                <button type="button" class="secondary-btn" id="share-run-btn">导出回放</button>
               </div>
+            </div>
+          </div>
+          <div class="replay-banner replay-banner--hidden" id="replay-banner">
+            <div>
+              <strong id="replay-title">回放中</strong>
+              <p id="replay-copy">正在播放最近一局。</p>
+            </div>
+            <div class="overlay-actions">
+              <button type="button" class="secondary-btn menu-mini-btn" id="replay-restart-btn">重播</button>
+              <button type="button" class="secondary-btn menu-mini-btn" id="exit-replay-btn">退出回放</button>
             </div>
           </div>
           <aside class="settings-panel settings-panel--hidden" id="settings-panel">
@@ -241,8 +338,24 @@ export class RussianBlockApp {
                 <input type="checkbox" id="mute-toggle" />
               </label>
             </div>
+            <div class="settings-block">
+              <label class="toggle-row">
+                <span>自动开局</span>
+                <input type="checkbox" id="autostart-toggle" />
+              </label>
+            </div>
+            <div class="settings-block">
+              <label class="toggle-row">
+                <span>显示 Ghost</span>
+                <input type="checkbox" id="ghost-toggle" />
+              </label>
+            </div>
             <button type="button" class="secondary-btn settings-install settings-install--hidden" id="install-btn">安装到主屏幕</button>
-            <p class="settings-note">首次联网打开后会缓存资源，后续可以离线继续玩。主题会和最高分、静音设置一起保存在本机。</p>
+            <label class="seed-field settings-api">
+              <span class="theme-showcase-label">API Base</span>
+              <input type="text" id="api-base-input" placeholder="https://your-worker.example.workers.dev" />
+            </label>
+            <p class="settings-note">首次联网打开后会缓存资源，后续可以离线继续玩。主题、模式、Ghost 和 API 地址都会保存在本机。</p>
           </aside>
         </div>
       </div>
@@ -255,12 +368,28 @@ export class RussianBlockApp {
     this.pauseOverlay = this.root.querySelector("#pause-overlay");
     this.gameOverOverlay = this.root.querySelector("#gameover-overlay");
     this.gameOverCopy = this.root.querySelector("#gameover-copy");
+    this.resultEyebrow = this.root.querySelector("#result-eyebrow");
+    this.resultTitle = this.root.querySelector("#result-title");
+    this.resultGrid = this.root.querySelector("#result-grid");
     this.settingsPanel = this.root.querySelector("#settings-panel");
     this.muteToggle = this.root.querySelector("#mute-toggle");
+    this.autostartToggle = this.root.querySelector("#autostart-toggle");
+    this.ghostToggle = this.root.querySelector("#ghost-toggle");
+    this.apiBaseInput = this.root.querySelector("#api-base-input");
     this.installButton = this.root.querySelector("#install-btn");
     this.pauseButton = this.root.querySelector("#pause-btn");
     this.menuThemeName = this.root.querySelector("#theme-name");
     this.menuThemeDescription = this.root.querySelector("#theme-description");
+    this.menuModeName = this.root.querySelector("#mode-name");
+    this.menuModeDescription = this.root.querySelector("#mode-description");
+    this.seedField = this.root.querySelector("#seed-field");
+    this.seedInput = this.root.querySelector("#seed-input");
+    this.menuSummary = this.root.querySelector("#menu-summary");
+    this.historyList = this.root.querySelector("#history-list");
+    this.statusCopy = this.root.querySelector("#status-copy");
+    this.replayBanner = this.root.querySelector("#replay-banner");
+    this.replayTitle = this.root.querySelector("#replay-title");
+    this.replayCopy = this.root.querySelector("#replay-copy");
   }
 
   bindEvents() {
@@ -278,21 +407,51 @@ export class RussianBlockApp {
     this.root.querySelector("#restart-btn").addEventListener("click", () => this.restartGame());
     this.root.querySelector("#retry-btn").addEventListener("click", () => this.restartGame());
     this.root.querySelector("#menu-btn").addEventListener("click", () => this.returnToMenu());
+    this.root.querySelector("#replay-last-btn").addEventListener("click", () => this.replayMostRecentRun());
+    this.root.querySelector("#replay-full-btn").addEventListener("click", () => this.replayLastRun());
+    this.root.querySelector("#replay-clip-btn").addEventListener("click", () => this.replayLastClip());
+    this.root.querySelector("#share-run-btn").addEventListener("click", () => this.shareLastReplay());
+    this.root.querySelector("#replay-restart-btn").addEventListener("click", () => this.restartReplay());
+    this.root.querySelector("#exit-replay-btn").addEventListener("click", () => this.stopReplay());
     this.root.querySelector("#settings-btn").addEventListener("click", () => this.toggleSettings());
     this.pauseButton.addEventListener("click", () => this.togglePause());
     this.root.querySelector("#close-settings-btn").addEventListener("click", () => this.toggleSettings(false));
 
+    this.root.querySelectorAll("[data-mode-card]").forEach((button) => {
+      button.addEventListener("click", () => this.setSelectedMode(button.dataset.modeCard));
+    });
     this.root.querySelectorAll("[data-theme-card]").forEach((button) => {
       button.addEventListener("click", () => this.setTheme(button.dataset.themeCard, { playFeedback: true }));
     });
     this.root.querySelectorAll("[data-theme-option]").forEach((button) => {
       button.addEventListener("click", () => this.setTheme(button.dataset.themeOption, { playFeedback: true }));
     });
+    this.seedInput.addEventListener("input", () => {
+      this.selectedSeed = this.seedInput.value.trim();
+      this.settings.lastSeed = this.selectedSeed;
+      this.persistSettings();
+    });
 
     this.muteToggle.addEventListener("change", () => {
       this.settings.muted = this.muteToggle.checked;
       this.audio.setMuted(this.settings.muted);
       this.persistSettings();
+    });
+    this.autostartToggle.addEventListener("change", () => {
+      this.settings.autoStartLastMode = this.autostartToggle.checked;
+      this.persistSettings();
+    });
+    this.ghostToggle.addEventListener("change", () => {
+      this.settings.ghostEnabled = this.ghostToggle.checked;
+      this.persistSettings();
+      this.render();
+    });
+    this.apiBaseInput.addEventListener("change", () => {
+      this.settings.apiBase = this.apiBaseInput.value.trim();
+      this.apiClient = new RussianBlockApiClient(this.settings.apiBase);
+      this.persistSettings();
+      this.statusMessage = this.apiClient.configured ? "分享 API 已更新。" : "当前处于纯本地模式。";
+      this.updateUiState();
     });
 
     this.installButton.addEventListener("click", async () => {
@@ -345,6 +504,255 @@ export class RussianBlockApp {
     });
   }
 
+  setSelectedMode(modeId) {
+    this.selectedGameMode = sanitizeGameMode(modeId);
+    this.settings.lastMode = this.selectedGameMode;
+    this.persistSettings();
+    this.updateModeUi();
+  }
+
+  updateModeUi() {
+    const mode = getModeDefinition(this.selectedGameMode);
+    this.menuModeName.textContent = mode.label;
+    this.menuModeDescription.textContent = mode.description;
+    this.seedInput.value = this.selectedSeed;
+    this.seedField.hidden = !mode.usesSeed;
+    this.root.querySelectorAll("[data-mode-card]").forEach((button) => {
+      const active = button.dataset.modeCard === this.selectedGameMode;
+      button.setAttribute("aria-pressed", String(active));
+    });
+  }
+
+  createGameConfig(overrides = {}) {
+    return buildGameConfig({
+      gameMode: overrides.gameMode ?? this.selectedGameMode,
+      seed: overrides.seed ?? this.selectedSeed,
+    });
+  }
+
+  beginRecordingSession() {
+    this.activeRecorder = new ReplayRecorder({
+      themeId: this.theme.id,
+      config: this.engine.sessionConfig,
+      initialSnapshot: this.engine.exportSnapshot(),
+    });
+  }
+
+  recordAction(type, payload) {
+    if (!this.activeRecorder || this.replayPlayer || this.engine.mode !== "playing") {
+      return;
+    }
+    this.activeRecorder.recordAction(type, this.engine.elapsedMs, payload);
+  }
+
+  captureRecorderMarker(reason = "interval") {
+    if (!this.activeRecorder || this.replayPlayer) {
+      return;
+    }
+    this.activeRecorder.captureMarker(this.engine.elapsedMs, this.engine.exportSnapshot(), reason);
+  }
+
+  buildRunSummary(replay) {
+    const runId = createRunId();
+    return {
+      id: runId,
+      gameMode: this.engine.sessionConfig.gameMode,
+      label: getModeDefinition(this.engine.sessionConfig.gameMode).label,
+      outcome: this.engine.mode === "completed" ? "completed" : "gameover",
+      reason: this.engine.resultReason,
+      score: this.engine.score,
+      lines: this.engine.lines,
+      level: this.engine.level,
+      durationMs: this.engine.elapsedMs,
+      seed: this.engine.sessionConfig.seed,
+      combo: this.engine.bestCombo,
+      b2b: this.engine.backToBack,
+      themeId: this.theme.id,
+      createdAt: new Date().toISOString(),
+      replayId: replay.replayId,
+    };
+  }
+
+  finalizeCurrentRun() {
+    if (!this.activeRecorder) {
+      return;
+    }
+
+    const replay = this.activeRecorder.finalize({
+      durationMs: this.engine.elapsedMs,
+      result: this.engine.serializeState(),
+      finalSnapshot: this.engine.exportSnapshot(),
+    });
+    this.lastReplay = replay;
+    this.lastRunSummary = this.buildRunSummary(replay);
+    this.profile = recordRun(this.profile, this.lastRunSummary, replay);
+    saveProfile(this.profile);
+    this.activeRecorder = null;
+  }
+
+  exportReplay() {
+    if (this.lastReplay) {
+      return this.lastReplay;
+    }
+
+    if (!this.activeRecorder) {
+      return null;
+    }
+
+    return this.activeRecorder.finalize({
+      durationMs: this.engine.elapsedMs,
+      result: this.engine.serializeState(),
+      finalSnapshot: this.engine.exportSnapshot(),
+    });
+  }
+
+  startReplay(replay, { startAtMs = 0, title = "本局回放", subtitle = "正在播放本地回放。" } = {}) {
+    if (!replay || this.replayPlayer) {
+      return;
+    }
+
+    this.toggleSettings(false);
+    this.clearPendingTouchTap();
+    this.releaseGestureInput();
+    this.liveEngine = this.engine;
+    this.replayPlayer = new ReplayPlayer(replay, { startAtMs });
+    this.engine = this.replayPlayer.engine;
+    this.replayMeta = { replay, startAtMs, title, subtitle };
+    this.replayTitle.textContent = title;
+    this.replayCopy.textContent = subtitle;
+    this.updateUiState();
+    this.render();
+  }
+
+  stopReplay() {
+    if (!this.replayPlayer || !this.liveEngine) {
+      return;
+    }
+
+    this.engine = this.liveEngine;
+    this.liveEngine = null;
+    this.replayPlayer = null;
+    this.replayMeta = null;
+    this.statusMessage = "";
+    this.updateUiState();
+    this.render();
+  }
+
+  restartReplay() {
+    if (!this.replayMeta) {
+      return;
+    }
+    const { replay, startAtMs, title, subtitle } = this.replayMeta;
+    this.stopReplay();
+    this.startReplay(replay, { startAtMs, title, subtitle });
+  }
+
+  replayLastRun() {
+    if (!this.lastReplay) {
+      this.statusMessage = "当前还没有可回放的完整对局。";
+      this.updateUiState();
+      return;
+    }
+    this.startReplay(this.lastReplay, {
+      title: "本局回放",
+      subtitle: `${getModeDefinition(this.lastReplay.mode).label} · Seed ${this.lastReplay.seed}`,
+    });
+  }
+
+  replayLastClip() {
+    if (!this.lastReplay) {
+      this.statusMessage = "当前还没有可回放的完整对局。";
+      this.updateUiState();
+      return;
+    }
+    const clip = buildReplayClip(this.lastReplay, 8000);
+    this.startReplay(clip.replay, {
+      startAtMs: clip.startAtMs,
+      title: "最后 8 秒",
+      subtitle: "快速回看刚刚出事的那一段。",
+    });
+  }
+
+  replayMostRecentRun() {
+    const latestRun = this.profile.runs[0];
+    const replay = latestRun ? getReplayForRun(this.profile, latestRun.replayId) : null;
+    if (!replay) {
+      this.statusMessage = "最近战绩里还没有可回放的数据。";
+      this.updateUiState();
+      return;
+    }
+
+    this.startReplay(replay, {
+      title: "最近一局",
+      subtitle: `${latestRun.label} · ${formatScore(latestRun.score)} 分`,
+    });
+  }
+
+  async shareLastReplay() {
+    const replay = this.lastReplay;
+    if (!replay) {
+      this.statusMessage = "当前还没有可导出的回放。";
+      this.updateUiState();
+      return;
+    }
+
+    const localPayload = JSON.stringify(replay);
+    if (!this.apiClient.configured) {
+      await navigator.clipboard?.writeText(localPayload).catch(() => {});
+      this.statusMessage = "分享 API 未配置，已尝试把回放 JSON 复制到剪贴板。";
+      this.updateUiState();
+      return;
+    }
+
+    try {
+      const response = await this.apiClient.uploadReplay(replay);
+      await navigator.clipboard?.writeText(response.url ?? response.code ?? "").catch(() => {});
+      this.statusMessage = `已上传回放，分享码 ${response.code} 已尝试复制。`;
+    } catch (error) {
+      this.statusMessage = error instanceof Error ? error.message : "上传回放失败。";
+    }
+    this.updateUiState();
+  }
+
+  renderHistory() {
+    const totalPlay = formatDuration(this.profile.stats.totalPlayMs);
+    this.menuSummary.innerHTML = `
+      <div class="summary-chip"><strong>${formatScore(this.profile.stats.bestScore)}</strong><span>全局最高分</span></div>
+      <div class="summary-chip"><strong>${this.profile.stats.totalRuns}</strong><span>总局数</span></div>
+      <div class="summary-chip"><strong>${totalPlay}</strong><span>总时长</span></div>
+      <div class="summary-chip"><strong>${this.profile.stats.bestCombo}</strong><span>最佳连击</span></div>
+    `;
+
+    if (this.profile.runs.length === 0) {
+      this.historyList.innerHTML = `<div class="history-empty">还没有战绩，先来一局。</div>`;
+      return;
+    }
+
+    this.historyList.innerHTML = this.profile.runs
+      .slice(0, 5)
+      .map((run) => {
+        return `
+          <button type="button" class="history-row" data-history-replay="${run.replayId}">
+            <strong>${safeText(run.label)}</strong>
+            <span>${formatScore(run.score)} 分 · ${run.lines} 行 · ${formatDuration(run.durationMs)}</span>
+          </button>
+        `;
+      })
+      .join("");
+
+    this.historyList.querySelectorAll("[data-history-replay]").forEach((button) => {
+      button.addEventListener("click", () => {
+        const replay = getReplayForRun(this.profile, button.dataset.historyReplay);
+        if (replay) {
+          this.startReplay(replay, {
+            title: "历史回放",
+            subtitle: `${getModeDefinition(replay.mode).label} · Seed ${replay.seed}`,
+          });
+        }
+      });
+    });
+  }
+
   handleResize() {
     this.resizeCanvas();
     this.render();
@@ -365,6 +773,14 @@ export class RussianBlockApp {
   }
 
   handleKeyDown(event) {
+    if (this.replayPlayer) {
+      if (event.key.toLowerCase() === "escape") {
+        event.preventDefault();
+        this.stopReplay();
+      }
+      return;
+    }
+
     const key = event.key.toLowerCase();
     const controlKeys = new Set([
       "arrowleft",
@@ -409,13 +825,16 @@ export class RussianBlockApp {
     if (key === "w" || key === "arrowup") {
       if (this.engine.rotate(1)) {
         this.audio.play("click");
+        this.recordAction("rotate_cw");
       }
     } else if (key === " " || key === "spacebar") {
       this.engine.hardDrop();
       this.audio.play("drop");
+      this.recordAction("hard_drop");
     } else if (key === "c") {
       if (this.engine.holdCurrentPiece()) {
         this.audio.play("hold");
+        this.recordAction("hold");
       }
     } else if (key === "p" || key === "escape") {
       this.togglePause();
@@ -429,6 +848,9 @@ export class RussianBlockApp {
   }
 
   handleKeyUp(event) {
+    if (this.replayPlayer) {
+      return;
+    }
     const key = event.key.toLowerCase();
     if (key === "a" || key === "arrowleft") {
       this.setHorizontalState("left", false);
@@ -447,6 +869,7 @@ export class RussianBlockApp {
       state.repeatElapsed = 0;
       if (this.engine.moveHorizontal(direction === "left" ? -1 : 1)) {
         this.audio.play("click");
+        this.recordAction(direction === "left" ? "step_left" : "step_right");
       }
       this.afterStateChange();
       return;
@@ -465,6 +888,7 @@ export class RussianBlockApp {
       this.softDropState.elapsed = 0;
       this.softDropState.repeatElapsed = 0;
       this.engine.softDropStep();
+      this.recordAction("soft_drop_step");
       this.afterStateChange();
       return;
     }
@@ -527,7 +951,7 @@ export class RussianBlockApp {
   }
 
   canStartBoardGesture(event) {
-    if (event.pointerType === "mouse" || this.engine.mode !== "playing" || this.isSettingsOpen()) {
+    if (this.replayPlayer || event.pointerType === "mouse" || this.engine.mode !== "playing" || this.isSettingsOpen()) {
       return false;
     }
 
@@ -609,6 +1033,7 @@ export class RussianBlockApp {
       if (this.engine.moveHorizontal(direction)) {
         this.audio.play("click");
         gesture.movedHorizontally = true;
+        this.recordAction(direction < 0 ? "step_left" : "step_right");
         changed = true;
       }
       gesture.horizontalCarry -= horizontalThreshold * direction;
@@ -623,6 +1048,7 @@ export class RussianBlockApp {
       this.setSoftDrop(true);
       gesture.softDropActive = true;
       gesture.softDropTriggered = true;
+      this.recordAction("soft_drop_step");
       changed = true;
     }
 
@@ -673,6 +1099,7 @@ export class RussianBlockApp {
       this.clearPendingTouchTap();
       this.engine.hardDrop();
       this.audio.play("drop");
+      this.recordAction("hard_drop");
       this.afterStateChange();
       return;
     }
@@ -699,8 +1126,9 @@ export class RussianBlockApp {
       const withinDistance = distanceBetweenPoints(this.pendingTouchTap, tap) <= DOUBLE_TAP_DISTANCE_PX;
       if (withinWindow && withinDistance) {
         this.clearPendingTouchTap();
-        if (this.engine.holdCurrentPiece()) {
+      if (this.engine.holdCurrentPiece()) {
           this.audio.play("hold");
+          this.recordAction("hold");
         }
         this.afterStateChange();
         return;
@@ -720,6 +1148,7 @@ export class RussianBlockApp {
       this.pendingTouchTap = null;
       if (this.engine.rotate(1)) {
         this.audio.play("click");
+        this.recordAction("rotate_cw");
       }
       this.afterStateChange();
     }, SINGLE_TAP_DELAY_MS);
@@ -727,12 +1156,19 @@ export class RussianBlockApp {
     this.pendingTouchTap = pendingTap;
   }
 
-  startGame() {
+  startGame(overrides = {}) {
     this.audio.unlock();
     this.toggleSettings(false);
     this.clearPendingTouchTap();
     this.releaseGestureInput();
-    this.engine.startNewGame();
+    this.statusMessage = "";
+    const config = this.createGameConfig(overrides);
+    this.selectedGameMode = config.gameMode;
+    this.selectedSeed = config.seed;
+    this.engine.startNewGame(config);
+    this.settings.lastMode = config.gameMode;
+    this.settings.lastSeed = config.seed;
+    this.beginRecordingSession();
     this.audio.play("click");
     this.afterStateChange();
   }
@@ -763,11 +1199,16 @@ export class RussianBlockApp {
   }
 
   restartGame() {
+    if (this.replayPlayer) {
+      this.stopReplay();
+    }
     this.audio.unlock();
     this.toggleSettings(false);
     this.clearPendingTouchTap();
     this.releaseGestureInput();
+    this.statusMessage = "";
     this.engine.restart();
+    this.beginRecordingSession();
     this.audio.play("click");
     this.afterStateChange();
   }
@@ -781,16 +1222,20 @@ export class RussianBlockApp {
   }
 
   returnToMenu() {
+    if (this.replayPlayer) {
+      this.stopReplay();
+    }
     this.toggleSettings(false);
     this.clearPendingTouchTap();
     this.releaseGestureInput();
+    this.statusMessage = "";
     this.engine.resetToMenu();
     this.audio.play("click");
     this.afterStateChange();
   }
 
   togglePause() {
-    if (this.engine.mode === "menu" || this.engine.mode === "gameover") {
+    if (this.replayPlayer || this.engine.mode === "menu" || this.engine.mode === "gameover" || this.engine.mode === "completed") {
       return;
     }
     this.clearPendingTouchTap();
@@ -819,6 +1264,8 @@ export class RussianBlockApp {
   persistSettings() {
     this.settings.bestScore = this.engine.bestScore;
     this.settings.themeId = this.theme.id;
+    this.settings.lastMode = this.selectedGameMode;
+    this.settings.lastSeed = this.selectedSeed;
     saveSettings(this.settings);
   }
 
@@ -832,25 +1279,42 @@ export class RussianBlockApp {
     for (const effect of this.engine.drainEffects()) {
       if (effect.type === "line-clear") {
         this.audio.play("line-clear");
+        this.captureRecorderMarker(effect.tSpin ? "tspin" : "line-clear");
+      } else if (effect.type === "completed") {
+        this.audio.play("line-clear");
+        this.captureRecorderMarker("completed");
+        this.finalizeCurrentRun();
       } else if (effect.type === "gameover") {
         this.audio.play("gameover");
+        this.captureRecorderMarker("gameover");
+        this.finalizeCurrentRun();
       } else if (effect.type === "drop") {
         this.audio.play("drop");
+      } else if (effect.type === "hold") {
+        this.captureRecorderMarker("hold");
       }
     }
     this.persistSettings();
   }
 
   advanceTime(deltaMs) {
+    if (this.replayPlayer) {
+      this.replayPlayer.update(deltaMs);
+      this.updateUiState();
+      this.render();
+      return;
+    }
+
     this.tickInputs(deltaMs);
     this.engine.update(deltaMs);
+    this.captureRecorderMarker();
     this.processEffects();
     this.updateUiState();
     this.render();
   }
 
   tickInputs(deltaMs) {
-    if (this.engine.mode !== "playing") {
+    if (this.replayPlayer || this.engine.mode !== "playing") {
       return;
     }
 
@@ -861,6 +1325,7 @@ export class RussianBlockApp {
       this.updateRepeat(this.horizontalState.left, deltaMs, () => {
         if (this.engine.moveHorizontal(-1)) {
           this.audio.play("click");
+          this.recordAction("step_left");
         }
       });
     } else {
@@ -872,6 +1337,7 @@ export class RussianBlockApp {
       this.updateRepeat(this.horizontalState.right, deltaMs, () => {
         if (this.engine.moveHorizontal(1)) {
           this.audio.play("click");
+          this.recordAction("step_right");
         }
       });
     } else {
@@ -885,6 +1351,7 @@ export class RussianBlockApp {
       while (this.softDropState.repeatElapsed >= SOFT_DROP_INTERVAL) {
         this.softDropState.repeatElapsed -= SOFT_DROP_INTERVAL;
         this.engine.softDropStep();
+        this.recordAction("soft_drop_step");
       }
     } else {
       this.softDropState.elapsed = 0;
@@ -917,11 +1384,40 @@ export class RussianBlockApp {
 
   updateUiState() {
     this.muteToggle.checked = this.settings.muted;
+    this.autostartToggle.checked = this.settings.autoStartLastMode;
+    this.ghostToggle.checked = this.settings.ghostEnabled;
+    this.apiBaseInput.value = this.settings.apiBase ?? "";
     this.menuOverlay.classList.toggle("overlay--hidden", this.engine.mode !== "menu");
     this.pauseOverlay.classList.toggle("overlay--hidden", this.engine.mode !== "paused");
-    this.gameOverOverlay.classList.toggle("overlay--hidden", this.engine.mode !== "gameover");
-    this.pauseButton.hidden = this.engine.mode !== "playing";
+    this.gameOverOverlay.classList.toggle(
+      "overlay--hidden",
+      this.engine.mode !== "gameover" && this.engine.mode !== "completed"
+    );
+    this.pauseButton.hidden = this.engine.mode !== "playing" || Boolean(this.replayPlayer);
+    this.replayBanner.classList.toggle("replay-banner--hidden", !this.replayPlayer);
+    this.updateModeUi();
+    this.renderHistory();
+
+    const latestRun = this.lastRunSummary ?? this.profile.runs[0] ?? null;
+    if (this.engine.mode === "completed") {
+      this.resultEyebrow.textContent = "Completed";
+      this.resultTitle.textContent = "挑战完成";
+    } else {
+      this.resultEyebrow.textContent = "Game Over";
+      this.resultTitle.textContent = "堆到顶了";
+    }
     this.gameOverCopy.textContent = `本局得分 ${formatScore(this.engine.score)}，最高分 ${formatScore(this.engine.bestScore)}。`;
+    this.resultGrid.innerHTML = latestRun
+      ? `
+        <div class="result-chip"><strong>${safeText(latestRun.label)}</strong><span>模式</span></div>
+        <div class="result-chip"><strong>${formatDuration(latestRun.durationMs)}</strong><span>时长</span></div>
+        <div class="result-chip"><strong>${latestRun.lines}</strong><span>消行</span></div>
+        <div class="result-chip"><strong>${latestRun.combo}</strong><span>最佳连击</span></div>
+      `
+      : "";
+    this.statusCopy.textContent =
+      this.statusMessage ||
+      `当前模式最佳 ${formatScore(getBestScoreForMode(this.profile, this.selectedGameMode))} 分。`;
   }
 
   render() {
@@ -1172,23 +1668,25 @@ export class RussianBlockApp {
       }
     }
 
-    for (const cell of this.engine.getActiveCells({ ghost: true })) {
-      const row = cell.y - BUFFER_ROWS;
-      if (row < 0 || row >= VISIBLE_ROWS) {
-        continue;
+    if (this.settings.ghostEnabled) {
+      for (const cell of this.engine.getActiveCells({ ghost: true })) {
+        const row = cell.y - BUFFER_ROWS;
+        if (row < 0 || row >= VISIBLE_ROWS) {
+          continue;
+        }
+        const x = layout.boardX + cell.x * layout.cellSize;
+        const y = layout.boardY + row * layout.cellSize;
+        ctx.strokeStyle = this.theme.canvas.ghost;
+        ctx.lineWidth = Math.max(2, layout.cellSize * 0.08);
+        strokeRoundedRect(
+          ctx,
+          x + 4,
+          y + 4,
+          layout.cellSize - 8,
+          layout.cellSize - 8,
+          Math.max(5, layout.cellSize * 0.16)
+        );
       }
-      const x = layout.boardX + cell.x * layout.cellSize;
-      const y = layout.boardY + row * layout.cellSize;
-      ctx.strokeStyle = this.theme.canvas.ghost;
-      ctx.lineWidth = Math.max(2, layout.cellSize * 0.08);
-      strokeRoundedRect(
-        ctx,
-        x + 4,
-        y + 4,
-        layout.cellSize - 8,
-        layout.cellSize - 8,
-        Math.max(5, layout.cellSize * 0.16)
-      );
     }
 
     for (let row = BUFFER_ROWS; row < this.engine.board.length; row += 1) {
@@ -1419,23 +1917,25 @@ export class RussianBlockApp {
   }
 
   drawStats(ctx, rect) {
-    const lines = [
-      [
-        "模式",
-        this.engine.mode === "menu"
-          ? "待开始"
-          : this.engine.mode === "paused"
-            ? "暂停中"
-            : this.engine.mode === "gameover"
-              ? "结束"
-              : "进行中",
-      ],
-      ["最高分", formatScore(this.engine.bestScore)],
-      ["等级", String(this.engine.level)],
-      ["消行", String(this.engine.lines)],
-      ["暂存", this.engine.holdPieceType ?? "-"],
-      ["主题", this.theme.name],
-    ];
+    const compact = rect.h < 150;
+    const lines = compact
+      ? [
+          ["模式", getModeDefinition(this.engine.sessionConfig.gameMode).name],
+          ["等级", String(this.engine.level)],
+          ["消行", String(this.engine.lines)],
+          ["连击", String(this.engine.combo)],
+        ]
+      : [
+          ["模式", getModeDefinition(this.engine.sessionConfig.gameMode).name],
+          ["状态", this.engine.mode === "paused" ? "暂停中" : this.engine.mode === "completed" ? "已完成" : this.engine.mode === "gameover" ? "结束" : this.engine.mode === "menu" ? "待开始" : "进行中"],
+          ["最高分", formatScore(this.engine.bestScore)],
+          ["等级", String(this.engine.level)],
+          ["消行", String(this.engine.lines)],
+          ["暂存", this.engine.holdPieceType ?? "-"],
+          ["主题", this.theme.name],
+          ["连击", String(this.engine.combo)],
+          ["B2B", String(this.engine.backToBack)],
+        ];
 
     ctx.save();
     ctx.fillStyle = this.theme.canvas.textMuted;
@@ -1444,11 +1944,18 @@ export class RussianBlockApp {
     ctx.fillStyle = this.theme.canvas.textPrimary;
     ctx.font = "700 22px 'Trebuchet MS', 'Segoe UI', sans-serif";
     ctx.fillText(formatScore(this.engine.score), rect.x + 16, rect.y + 82);
+    ctx.font = "500 12px 'Trebuchet MS', 'Segoe UI', sans-serif";
+    ctx.fillStyle = this.theme.canvas.statsAccent;
+    const timerLabel =
+      this.engine.remainingMs !== null
+        ? `剩余 ${formatTimer(this.engine.remainingMs)}`
+        : `时长 ${formatTimer(this.engine.elapsedMs)}`;
+    ctx.fillText(timerLabel, rect.x + 16, rect.y + 102);
 
     ctx.font = "500 14px 'Trebuchet MS', 'Segoe UI', sans-serif";
     ctx.fillStyle = this.theme.canvas.textMuted;
     lines.forEach(([label, value], index) => {
-      const y = rect.y + 116 + index * 22;
+      const y = rect.y + 132 + index * (compact ? 18 : 20);
       ctx.fillText(label, rect.x + 16, y);
       ctx.fillStyle = this.theme.canvas.textPrimary;
       ctx.textAlign = "right";
@@ -1461,11 +1968,13 @@ export class RussianBlockApp {
 
   drawFooter(ctx, layout) {
     const footerText =
-      this.engine.mode === "menu"
-        ? `${this.theme.name}主题已就绪，可添加到主屏幕`
-        : layout.portrait
-          ? "滑动移动 单击旋转 双击 Hold"
-          : "P 暂停  R 重开  F 全屏";
+      this.replayPlayer
+        ? "回放中 · Esc 退出回放"
+        : this.engine.mode === "menu"
+          ? `${getModeDefinition(this.selectedGameMode).label} 已就绪`
+          : layout.portrait
+            ? "滑动移动 单击旋转 双击 Hold"
+            : "P 暂停  R 重开  F 全屏";
     ctx.save();
     ctx.fillStyle = this.theme.canvas.footer;
     ctx.font = "500 13px 'Trebuchet MS', 'Segoe UI', sans-serif";
