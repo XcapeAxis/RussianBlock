@@ -107,9 +107,11 @@ const DOUBLE_TAP_DISTANCE_PX = 24;
 const TAP_SLOP_PX = 18;
 const HORIZONTAL_GESTURE_RATIO = 0.6;
 const SOFT_DROP_GESTURE_RATIO = 0.75;
-const HARD_DROP_GESTURE_RATIO = 4.2;
-const HARD_DROP_MIN_VELOCITY = 1.85;
-const HARD_DROP_VERTICAL_DOMINANCE = 1.6;
+const HARD_DROP_GESTURE_RATIO = 5.4;
+const HARD_DROP_MIN_VELOCITY = 2.25;
+const HARD_DROP_VERTICAL_DOMINANCE = 2.2;
+const HARD_DROP_MAX_DURATION_MS = 240;
+const HARD_DROP_MAX_LATERAL_DRIFT_RATIO = 0.45;
 
 function distanceBetweenPoints(a, b) {
   return Math.hypot(a.x - b.x, a.y - b.y);
@@ -555,12 +557,14 @@ export class RussianBlockApp {
     const now = performance.now();
     this.activeGesture = {
       pointerId: event.pointerId,
+      startTime: now,
       startX: event.clientX,
       startY: event.clientY,
       lastX: event.clientX,
       lastY: event.clientY,
       lastMoveTime: now,
       lastVelocityY: 0,
+      maxAbsDeltaX: 0,
       horizontalCarry: 0,
       movedHorizontally: false,
       softDropActive: false,
@@ -589,6 +593,7 @@ export class RussianBlockApp {
     const totalX = event.clientX - gesture.startX;
     const totalY = event.clientY - gesture.startY;
     const travelDistance = Math.hypot(totalX, totalY);
+    gesture.maxAbsDeltaX = Math.max(gesture.maxAbsDeltaX, Math.abs(totalX));
 
     if (!gesture.resolvedPendingTap && this.pendingTouchTap && travelDistance > TAP_SLOP_PX) {
       this.flushPendingTouchTap();
@@ -647,12 +652,15 @@ export class RussianBlockApp {
     const totalY = event.clientY - gesture.startY;
     const travelDistance = Math.hypot(totalX, totalY);
     const now = performance.now();
+    const gestureDuration = now - gesture.startTime;
     const shouldHardDrop =
       event.type === "pointerup" &&
       !gesture.hardDropped &&
       totalY >= gesture.cellSize * HARD_DROP_GESTURE_RATIO &&
       totalY > Math.abs(totalX) * HARD_DROP_VERTICAL_DOMINANCE &&
-      gesture.lastVelocityY >= HARD_DROP_MIN_VELOCITY;
+      gesture.lastVelocityY >= HARD_DROP_MIN_VELOCITY &&
+      gestureDuration <= HARD_DROP_MAX_DURATION_MS &&
+      gesture.maxAbsDeltaX <= gesture.cellSize * HARD_DROP_MAX_LATERAL_DRIFT_RATIO;
 
     if (gesture.softDropActive) {
       this.setSoftDrop(false);

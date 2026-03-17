@@ -376,7 +376,7 @@ async function runMobileGestureLoop(baseUrl, playwright) {
 
     const beforeHardDrop = await getState();
     const hardDropStart = boardPoint(geometry, 0.52, 0.16);
-    const hardDropEnd = { x: hardDropStart.x, y: hardDropStart.y + geometry.cellSize * 4.8 };
+    const hardDropEnd = { x: hardDropStart.x, y: hardDropStart.y + geometry.cellSize * 5.9 };
     const hardDropPointerId = nextPointerId();
     await dispatchTouchSequence(
       page,
@@ -389,6 +389,28 @@ async function runMobileGestureLoop(baseUrl, playwright) {
     );
     const afterHardDrop = await getState();
     assert(afterHardDrop.score > beforeHardDrop.score, "Fast downward flick should hard drop the piece");
+
+    const beforeOffAxisDrop = await getState();
+    const offAxisStart = boardPoint(geometry, 0.5, 0.16);
+    const offAxisEnd = {
+      x: offAxisStart.x + geometry.cellSize * 0.75,
+      y: offAxisStart.y + geometry.cellSize * 5.9,
+    };
+    const offAxisPointerId = nextPointerId();
+    await dispatchTouchSequence(
+      page,
+      [
+        { type: "pointerdown", x: offAxisStart.x, y: offAxisStart.y, waitMs: 6 },
+        { type: "pointermove", x: offAxisEnd.x, y: offAxisEnd.y, waitMs: 6 },
+        { type: "pointerup", x: offAxisEnd.x, y: offAxisEnd.y, waitMs: 30 },
+      ],
+      offAxisPointerId
+    );
+    const afterOffAxisDrop = await getState();
+    assert(
+      afterOffAxisDrop.activePiece.type === beforeOffAxisDrop.activePiece.type,
+      "A diagonal downward swipe should stay in soft drop and must not trigger hard drop"
+    );
 
     await page.locator("#pause-btn").click();
     const pausedState = await getState();
