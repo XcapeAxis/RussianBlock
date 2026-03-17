@@ -1,7 +1,6 @@
 import {
   BOARD_COLS,
   BUFFER_ROWS,
-  COLORS,
   MOVE_REPEAT_DELAY,
   MOVE_REPEAT_INTERVAL,
   SOFT_DROP_INTERVAL,
@@ -9,8 +8,9 @@ import {
 } from "../game/constants.js";
 import { AudioManager } from "../game/audio.js";
 import { TetrisEngine } from "../game/engine.js";
-import { PIECES, getPieceCells } from "../game/pieces.js";
+import { getPieceCells } from "../game/pieces.js";
 import { loadSettings, saveSettings } from "../game/storage.js";
+import { getTheme, THEMES } from "../game/themes.js";
 
 function formatScore(value) {
   return new Intl.NumberFormat("zh-CN").format(value);
@@ -28,6 +28,12 @@ function strokeRoundedRect(ctx, x, y, width, height, radius) {
   ctx.stroke();
 }
 
+function clipRoundedRect(ctx, x, y, width, height, radius) {
+  ctx.beginPath();
+  ctx.roundRect(x, y, width, height, radius);
+  ctx.clip();
+}
+
 function clamp(value, min, max) {
   return Math.min(max, Math.max(min, value));
 }
@@ -38,6 +44,61 @@ function createHoldState() {
     elapsed: 0,
     repeatElapsed: 0,
   };
+}
+
+function buildThemeCardsMarkup() {
+  return THEMES.map(
+    (theme) => `
+      <button type="button" class="theme-card" data-theme-card="${theme.id}" aria-pressed="false">
+        <div class="theme-card-swatch" style="background: linear-gradient(135deg, ${theme.preview.stops});"></div>
+        <span class="theme-card-badge">${theme.preview.badge}</span>
+        <strong>${theme.name}</strong>
+        <span>${theme.description}</span>
+      </button>
+    `
+  ).join("");
+}
+
+function buildThemeChipsMarkup() {
+  return THEMES.map(
+    (theme) => `
+      <button type="button" class="theme-chip" data-theme-option="${theme.id}" aria-pressed="false">
+        <span class="theme-chip-dot" style="background: linear-gradient(135deg, ${theme.preview.stops});"></span>
+        <span class="theme-chip-copy">
+          <strong>${theme.name}</strong>
+          <span>${theme.preview.badge}</span>
+        </span>
+      </button>
+    `
+  ).join("");
+}
+
+function applyCssVariables(styleTarget, theme) {
+  const entries = {
+    "--bg-0": theme.ui.bg0,
+    "--bg-1": theme.ui.bg1,
+    "--panel": theme.ui.panel,
+    "--panel-border": theme.ui.panelBorder,
+    "--text": theme.ui.text,
+    "--muted": theme.ui.muted,
+    "--accent": theme.ui.accent,
+    "--accent-soft": theme.ui.accentSoft,
+    "--chip": theme.ui.chip,
+    "--button-from": theme.ui.buttonFrom,
+    "--button-to": theme.ui.buttonTo,
+    "--button-alt": theme.ui.buttonAlt,
+    "--shadow": theme.ui.shadow,
+    "--stage-from": theme.ui.stageFrom,
+    "--stage-to": theme.ui.stageTo,
+    "--stage-glow": theme.ui.stageGlow,
+    "--stage-border": theme.ui.stageBorder,
+    "--overlay-scrim": theme.ui.overlayScrim,
+  };
+
+  styleTarget.setProperty("color-scheme", theme.ui.colorScheme);
+  Object.entries(entries).forEach(([name, value]) => {
+    styleTarget.setProperty(name, value);
+  });
 }
 
 const SINGLE_TAP_DELAY_MS = 180;
@@ -58,6 +119,7 @@ export class RussianBlockApp {
   constructor(root) {
     this.root = root;
     this.settings = loadSettings();
+    this.theme = getTheme(this.settings.themeId);
     this.query = new URLSearchParams(window.location.search);
     this.audio = new AudioManager({ muted: this.settings.muted });
     this.engine = new TetrisEngine({ bestScore: this.settings.bestScore });
@@ -83,6 +145,7 @@ export class RussianBlockApp {
     this.handleBoardPointerEnd = this.handleBoardPointerEnd.bind(this);
 
     this.buildDom();
+    this.applyTheme();
     this.bindEvents();
     if (this.query.get("autostart") === "1") {
       this.startGame();
@@ -126,6 +189,14 @@ export class RussianBlockApp {
                 <button type="button" class="primary-btn" id="start-btn">开始游戏</button>
                 <button type="button" class="secondary-btn" id="fullscreen-btn">全屏</button>
               </div>
+              <div class="theme-showcase">
+                <span class="theme-showcase-label">当前皮肤</span>
+                <strong id="theme-name"></strong>
+                <p id="theme-description"></p>
+              </div>
+              <div class="theme-carousel" id="theme-carousel">
+                ${buildThemeCardsMarkup()}
+              </div>
               <p class="overlay-hint">触屏：左右滑移动，单击旋转，下拖软降，下甩硬降，双击 Hold。键盘：A/D 移动，W 旋转，Space 硬降，C Hold。</p>
             </div>
           </div>
@@ -156,12 +227,20 @@ export class RussianBlockApp {
               <h2>设置</h2>
               <button type="button" class="icon-btn" id="close-settings-btn">关闭</button>
             </div>
-            <label class="toggle-row">
-              <span>静音</span>
-              <input type="checkbox" id="mute-toggle" />
-            </label>
+            <div class="settings-block">
+              <span class="settings-label">主题</span>
+              <div class="settings-theme-grid">
+                ${buildThemeChipsMarkup()}
+              </div>
+            </div>
+            <div class="settings-block">
+              <label class="toggle-row">
+                <span>静音</span>
+                <input type="checkbox" id="mute-toggle" />
+              </label>
+            </div>
             <button type="button" class="secondary-btn settings-install settings-install--hidden" id="install-btn">安装到主屏幕</button>
-            <p class="settings-note">首次联网打开后会缓存资源，后续可以离线继续玩。</p>
+            <p class="settings-note">首次联网打开后会缓存资源，后续可以离线继续玩。主题会和最高分、静音设置一起保存在本机。</p>
           </aside>
         </div>
       </div>
@@ -178,6 +257,8 @@ export class RussianBlockApp {
     this.muteToggle = this.root.querySelector("#mute-toggle");
     this.installButton = this.root.querySelector("#install-btn");
     this.pauseButton = this.root.querySelector("#pause-btn");
+    this.menuThemeName = this.root.querySelector("#theme-name");
+    this.menuThemeDescription = this.root.querySelector("#theme-description");
   }
 
   bindEvents() {
@@ -198,6 +279,13 @@ export class RussianBlockApp {
     this.root.querySelector("#settings-btn").addEventListener("click", () => this.toggleSettings());
     this.pauseButton.addEventListener("click", () => this.togglePause());
     this.root.querySelector("#close-settings-btn").addEventListener("click", () => this.toggleSettings(false));
+
+    this.root.querySelectorAll("[data-theme-card]").forEach((button) => {
+      button.addEventListener("click", () => this.setTheme(button.dataset.themeCard, { playFeedback: true }));
+    });
+    this.root.querySelectorAll("[data-theme-option]").forEach((button) => {
+      button.addEventListener("click", () => this.setTheme(button.dataset.themeOption, { playFeedback: true }));
+    });
 
     this.muteToggle.addEventListener("change", () => {
       this.settings.muted = this.muteToggle.checked;
@@ -224,6 +312,35 @@ export class RussianBlockApp {
     this.canvas.addEventListener("pointermove", this.handleBoardPointerMove);
     this.canvas.addEventListener("pointerup", this.handleBoardPointerEnd);
     this.canvas.addEventListener("pointercancel", this.handleBoardPointerEnd);
+  }
+
+  setTheme(themeId, { playFeedback = false } = {}) {
+    const nextTheme = getTheme(themeId);
+    const changed = nextTheme.id !== this.theme.id;
+    this.theme = nextTheme;
+    this.settings.themeId = nextTheme.id;
+    this.applyTheme();
+    this.persistSettings();
+    if (playFeedback && changed) {
+      this.audio.play("click");
+    }
+    this.render();
+  }
+
+  applyTheme() {
+    applyCssVariables(document.documentElement.style, this.theme);
+    this.stage.dataset.themeId = this.theme.id;
+    this.menuThemeName.textContent = `${this.theme.name}主题`;
+    this.menuThemeDescription.textContent = this.theme.description;
+
+    this.root.querySelectorAll("[data-theme-card]").forEach((button) => {
+      const active = button.dataset.themeCard === this.theme.id;
+      button.setAttribute("aria-pressed", String(active));
+    });
+    this.root.querySelectorAll("[data-theme-option]").forEach((button) => {
+      const active = button.dataset.themeOption === this.theme.id;
+      button.setAttribute("aria-pressed", String(active));
+    });
   }
 
   handleResize() {
@@ -505,9 +622,7 @@ export class RussianBlockApp {
     }
 
     const deltaTime = Math.max(1, now - gesture.lastMoveTime);
-    const velocityY = stepY / deltaTime;
-    gesture.lastVelocityY = velocityY;
-
+    gesture.lastVelocityY = stepY / deltaTime;
     gesture.lastX = event.clientX;
     gesture.lastY = event.clientY;
     gesture.lastMoveTime = now;
@@ -606,6 +721,7 @@ export class RussianBlockApp {
 
   startGame() {
     this.audio.unlock();
+    this.toggleSettings(false);
     this.clearPendingTouchTap();
     this.releaseGestureInput();
     this.engine.startNewGame();
@@ -640,6 +756,7 @@ export class RussianBlockApp {
 
   restartGame() {
     this.audio.unlock();
+    this.toggleSettings(false);
     this.clearPendingTouchTap();
     this.releaseGestureInput();
     this.engine.restart();
@@ -656,6 +773,7 @@ export class RussianBlockApp {
   }
 
   returnToMenu() {
+    this.toggleSettings(false);
     this.clearPendingTouchTap();
     this.releaseGestureInput();
     this.engine.resetToMenu();
@@ -692,6 +810,7 @@ export class RussianBlockApp {
 
   persistSettings() {
     this.settings.bestScore = this.engine.bestScore;
+    this.settings.themeId = this.theme.id;
     saveSettings(this.settings);
   }
 
@@ -808,8 +927,8 @@ export class RussianBlockApp {
     ctx.clearRect(0, 0, width, height);
 
     const gradient = ctx.createLinearGradient(0, 0, width, height);
-    gradient.addColorStop(0, "#0b1730");
-    gradient.addColorStop(1, "#102033");
+    gradient.addColorStop(0, this.theme.canvas.backgroundStart);
+    gradient.addColorStop(1, this.theme.canvas.backgroundEnd);
     ctx.fillStyle = gradient;
     ctx.fillRect(0, 0, width, height);
 
@@ -867,22 +986,144 @@ export class RussianBlockApp {
   }
 
   drawBackdrop(ctx, width, height) {
+    const { scene, primary, secondary } = this.theme.backdrop;
+
     ctx.save();
-    ctx.globalAlpha = 0.22;
-    for (let index = 0; index < 18; index += 1) {
-      const size = 28 + (index % 4) * 14;
-      const x = (index * 97) % width;
-      const y = (index * 151) % height;
-      ctx.fillStyle = index % 2 === 0 ? "#163453" : "#18425f";
-      fillRoundedRect(ctx, x, y, size, size, 8);
+    if (scene === "classic") {
+      ctx.globalAlpha = 0.22;
+      for (let index = 0; index < 18; index += 1) {
+        const size = 28 + (index % 4) * 14;
+        const x = (index * 97) % width;
+        const y = (index * 151) % height;
+        ctx.fillStyle = primary[index % primary.length];
+        fillRoundedRect(ctx, x, y, size, size, 8);
+      }
+    } else if (scene === "ocean") {
+      primary.forEach((color, index) => {
+        const bubbleX = ((index + 1) * width) / (primary.length + 1);
+        const bubbleY = height * (0.18 + index * 0.2);
+        const radius = 70 + index * 22;
+        const bubble = ctx.createRadialGradient(bubbleX, bubbleY, 6, bubbleX, bubbleY, radius);
+        bubble.addColorStop(0, color);
+        bubble.addColorStop(1, "rgba(255,255,255,0)");
+        ctx.fillStyle = bubble;
+        ctx.beginPath();
+        ctx.arc(bubbleX, bubbleY, radius, 0, Math.PI * 2);
+        ctx.fill();
+      });
+
+      ctx.lineWidth = 3;
+      secondary.forEach((color, index) => {
+        ctx.strokeStyle = color;
+        ctx.beginPath();
+        ctx.moveTo(-40, height * (0.24 + index * 0.16));
+        ctx.bezierCurveTo(width * 0.2, height * (0.1 + index * 0.18), width * 0.62, height * (0.34 + index * 0.16), width + 40, height * (0.18 + index * 0.18));
+        ctx.stroke();
+      });
+    } else if (scene === "gem") {
+      primary.forEach((color, index) => {
+        const centerX = width * (0.18 + index * 0.22);
+        const centerY = height * (0.2 + (index % 2) * 0.28);
+        const size = 58 + index * 12;
+        ctx.fillStyle = color;
+        ctx.beginPath();
+        ctx.moveTo(centerX, centerY - size);
+        ctx.lineTo(centerX + size * 0.72, centerY - size * 0.18);
+        ctx.lineTo(centerX + size * 0.44, centerY + size * 0.7);
+        ctx.lineTo(centerX - size * 0.42, centerY + size * 0.72);
+        ctx.lineTo(centerX - size * 0.78, centerY - size * 0.1);
+        ctx.closePath();
+        ctx.fill();
+        ctx.strokeStyle = secondary[index % secondary.length];
+        ctx.lineWidth = 1.5;
+        ctx.stroke();
+      });
+    } else if (scene === "starlight") {
+      primary.forEach((color, index) => {
+        const starX = ((index + 1) * width) / (primary.length + 1);
+        const starY = height * (0.16 + (index % 2) * 0.26);
+        const glow = ctx.createRadialGradient(starX, starY, 0, starX, starY, 90);
+        glow.addColorStop(0, color);
+        glow.addColorStop(1, "rgba(255,255,255,0)");
+        ctx.fillStyle = glow;
+        ctx.beginPath();
+        ctx.arc(starX, starY, 90, 0, Math.PI * 2);
+        ctx.fill();
+      });
+
+      for (let index = 0; index < 28; index += 1) {
+        const x = ((index * 71) % width) + 12;
+        const y = ((index * 97) % height) + 10;
+        const size = index % 5 === 0 ? 4 : 2;
+        ctx.strokeStyle = secondary[index % secondary.length];
+        ctx.lineWidth = 1;
+        ctx.beginPath();
+        ctx.moveTo(x - size, y);
+        ctx.lineTo(x + size, y);
+        ctx.moveTo(x, y - size);
+        ctx.lineTo(x, y + size);
+        ctx.stroke();
+      }
+    } else if (scene === "aurora") {
+      primary.forEach((color, index) => {
+        const ribbon = ctx.createLinearGradient(width * 0.1, 0, width * 0.9, height);
+        ribbon.addColorStop(0, "rgba(255,255,255,0)");
+        ribbon.addColorStop(0.3, color);
+        ribbon.addColorStop(0.7, secondary[index % secondary.length]);
+        ribbon.addColorStop(1, "rgba(255,255,255,0)");
+        ctx.strokeStyle = ribbon;
+        ctx.lineWidth = 28 - index * 4;
+        ctx.beginPath();
+        ctx.moveTo(width * (0.18 + index * 0.15), -20);
+        ctx.bezierCurveTo(width * (0.02 + index * 0.15), height * 0.34, width * (0.28 + index * 0.12), height * 0.62, width * (0.12 + index * 0.18), height + 20);
+        ctx.stroke();
+      });
+    } else if (scene === "lava") {
+      primary.forEach((color, index) => {
+        const emberX = width * (0.14 + index * 0.22);
+        const emberY = height * (0.22 + (index % 2) * 0.26);
+        const radius = 54 + index * 20;
+        const ember = ctx.createRadialGradient(emberX, emberY, 0, emberX, emberY, radius);
+        ember.addColorStop(0, color);
+        ember.addColorStop(1, "rgba(255,255,255,0)");
+        ctx.fillStyle = ember;
+        ctx.beginPath();
+        ctx.arc(emberX, emberY, radius, 0, Math.PI * 2);
+        ctx.fill();
+      });
+
+      ctx.strokeStyle = secondary[1];
+      ctx.lineWidth = 2.2;
+      ctx.beginPath();
+      ctx.moveTo(width * 0.08, height * 0.7);
+      ctx.lineTo(width * 0.24, height * 0.58);
+      ctx.lineTo(width * 0.34, height * 0.66);
+      ctx.lineTo(width * 0.48, height * 0.52);
+      ctx.lineTo(width * 0.62, height * 0.62);
+      ctx.lineTo(width * 0.8, height * 0.48);
+      ctx.lineTo(width * 0.92, height * 0.56);
+      ctx.stroke();
     }
     ctx.restore();
   }
 
   drawPanels(ctx, layout) {
     ctx.save();
-    ctx.fillStyle = "rgba(4, 9, 17, 0.34)";
+    ctx.shadowBlur = 28;
+    ctx.shadowColor = this.theme.canvas.shellGlow;
+    ctx.fillStyle = this.theme.canvas.shell;
     fillRoundedRect(
+      ctx,
+      layout.boardX - 12,
+      layout.boardY - 12,
+      layout.boardWidth + 24,
+      layout.boardHeight + 24,
+      28
+    );
+    ctx.shadowBlur = 0;
+    ctx.strokeStyle = this.theme.canvas.shellBorder;
+    ctx.lineWidth = 1.5;
+    strokeRoundedRect(
       ctx,
       layout.boardX - 12,
       layout.boardY - 12,
@@ -895,14 +1136,23 @@ export class RussianBlockApp {
 
   drawBoard(ctx, layout) {
     ctx.save();
-    ctx.fillStyle = COLORS.board;
+    ctx.fillStyle = this.theme.canvas.board;
+    fillRoundedRect(ctx, layout.boardX, layout.boardY, layout.boardWidth, layout.boardHeight, 24);
+    ctx.strokeStyle = this.theme.canvas.boardBorder;
+    ctx.lineWidth = 1.25;
+    strokeRoundedRect(ctx, layout.boardX, layout.boardY, layout.boardWidth, layout.boardHeight, 24);
+
+    const boardHighlight = ctx.createLinearGradient(layout.boardX, layout.boardY, layout.boardX, layout.boardY + layout.boardHeight);
+    boardHighlight.addColorStop(0, this.theme.canvas.shellGlow);
+    boardHighlight.addColorStop(0.22, "rgba(255,255,255,0)");
+    ctx.fillStyle = boardHighlight;
     fillRoundedRect(ctx, layout.boardX, layout.boardY, layout.boardWidth, layout.boardHeight, 24);
 
     for (let row = 0; row < VISIBLE_ROWS; row += 1) {
       for (let col = 0; col < BOARD_COLS; col += 1) {
         const x = layout.boardX + col * layout.cellSize;
         const y = layout.boardY + row * layout.cellSize;
-        ctx.fillStyle = COLORS.boardGrid;
+        ctx.fillStyle = this.theme.canvas.boardGrid;
         fillRoundedRect(
           ctx,
           x + 1.4,
@@ -921,7 +1171,7 @@ export class RussianBlockApp {
       }
       const x = layout.boardX + cell.x * layout.cellSize;
       const y = layout.boardY + row * layout.cellSize;
-      ctx.strokeStyle = COLORS.ghost;
+      ctx.strokeStyle = this.theme.canvas.ghost;
       ctx.lineWidth = Math.max(2, layout.cellSize * 0.08);
       strokeRoundedRect(
         ctx,
@@ -950,7 +1200,7 @@ export class RussianBlockApp {
     }
 
     if (this.engine.mode === "paused") {
-      ctx.fillStyle = "rgba(4, 8, 15, 0.48)";
+      ctx.fillStyle = this.theme.canvas.pauseCurtain;
       fillRoundedRect(ctx, layout.boardX, layout.boardY, layout.boardWidth, layout.boardHeight, 24);
     }
 
@@ -960,23 +1210,131 @@ export class RussianBlockApp {
   drawCell(ctx, boardX, boardY, cellSize, col, row, type) {
     const x = boardX + col * cellSize;
     const y = boardY + row * cellSize;
-    const color = PIECES[type].color;
+    const style = this.theme.pieces[type];
+    const pad = Math.max(2, cellSize * 0.08);
+    const innerX = x + pad;
+    const innerY = y + pad;
+    const innerSize = cellSize - pad * 2;
+    const radius = Math.max(5, cellSize * 0.2);
+    const seed = type.charCodeAt(0) + col * 7 + row * 13;
 
     ctx.save();
-    ctx.fillStyle = color;
-    fillRoundedRect(ctx, x + 2, y + 2, cellSize - 4, cellSize - 4, Math.max(5, cellSize * 0.2));
-    ctx.fillStyle = "rgba(255,255,255,0.18)";
-    fillRoundedRect(
-      ctx,
-      x + 5,
-      y + 4,
-      cellSize - 12,
-      Math.max(6, cellSize * 0.18),
-      Math.max(4, cellSize * 0.12)
+    clipRoundedRect(ctx, innerX, innerY, innerSize, innerSize, radius);
+
+    const bodyGradient = ctx.createLinearGradient(innerX, innerY, innerX + innerSize, innerY + innerSize);
+    bodyGradient.addColorStop(0, style.highlight);
+    bodyGradient.addColorStop(0.45, style.fill);
+    bodyGradient.addColorStop(1, style.shade);
+    ctx.fillStyle = bodyGradient;
+    fillRoundedRect(ctx, innerX, innerY, innerSize, innerSize, radius);
+
+    const glowGradient = ctx.createRadialGradient(
+      innerX + innerSize * 0.34,
+      innerY + innerSize * 0.26,
+      innerSize * 0.04,
+      innerX + innerSize * 0.5,
+      innerY + innerSize * 0.52,
+      innerSize * 0.82
     );
-    ctx.strokeStyle = "rgba(0, 0, 0, 0.22)";
-    ctx.lineWidth = 1.5;
-    strokeRoundedRect(ctx, x + 2, y + 2, cellSize - 4, cellSize - 4, Math.max(5, cellSize * 0.2));
+    glowGradient.addColorStop(0, style.specular);
+    glowGradient.addColorStop(0.38, style.glow);
+    glowGradient.addColorStop(1, "rgba(255,255,255,0)");
+    ctx.globalCompositeOperation = "screen";
+    ctx.fillStyle = glowGradient;
+    fillRoundedRect(ctx, innerX, innerY, innerSize, innerSize, radius);
+    ctx.globalCompositeOperation = "source-over";
+
+    if (style.material === "classic") {
+      ctx.fillStyle = "rgba(255,255,255,0.14)";
+      fillRoundedRect(ctx, innerX + innerSize * 0.16, innerY + innerSize * 0.12, innerSize * 0.66, Math.max(6, innerSize * 0.16), Math.max(4, innerSize * 0.12));
+      ctx.strokeStyle = style.specular;
+      ctx.globalAlpha = 0.4;
+      ctx.lineWidth = Math.max(1.2, innerSize * 0.05);
+      ctx.beginPath();
+      ctx.moveTo(innerX + innerSize * 0.2, innerY + innerSize * 0.72);
+      ctx.lineTo(innerX + innerSize * 0.78, innerY + innerSize * 0.24);
+      ctx.stroke();
+      ctx.globalAlpha = 1;
+    } else if (style.material === "ocean") {
+      const wash = ctx.createLinearGradient(innerX, innerY, innerX, innerY + innerSize);
+      wash.addColorStop(0, "rgba(255,255,255,0.22)");
+      wash.addColorStop(0.45, "rgba(255,255,255,0.04)");
+      wash.addColorStop(1, "rgba(0,0,0,0.1)");
+      ctx.fillStyle = wash;
+      fillRoundedRect(ctx, innerX, innerY, innerSize, innerSize, radius);
+      ctx.fillStyle = "rgba(255,255,255,0.18)";
+      for (let index = 0; index < 3; index += 1) {
+        const bubbleX = innerX + innerSize * (0.28 + ((seed + index) % 4) * 0.12);
+        const bubbleY = innerY + innerSize * (0.24 + index * 0.18);
+        const bubbleSize = Math.max(2.4, innerSize * (0.06 + index * 0.01));
+        ctx.beginPath();
+        ctx.arc(bubbleX, bubbleY, bubbleSize, 0, Math.PI * 2);
+        ctx.fill();
+      }
+    } else if (style.material === "gem") {
+      ctx.strokeStyle = style.specular;
+      ctx.globalAlpha = 0.46;
+      ctx.lineWidth = Math.max(1.2, innerSize * 0.045);
+      ctx.beginPath();
+      ctx.moveTo(innerX + innerSize * 0.12, innerY + innerSize * 0.22);
+      ctx.lineTo(innerX + innerSize * 0.48, innerY + innerSize * 0.08);
+      ctx.lineTo(innerX + innerSize * 0.88, innerY + innerSize * 0.22);
+      ctx.moveTo(innerX + innerSize * 0.12, innerY + innerSize * 0.22);
+      ctx.lineTo(innerX + innerSize * 0.34, innerY + innerSize * 0.88);
+      ctx.lineTo(innerX + innerSize * 0.62, innerY + innerSize * 0.12);
+      ctx.lineTo(innerX + innerSize * 0.88, innerY + innerSize * 0.22);
+      ctx.stroke();
+      ctx.globalAlpha = 1;
+    } else if (style.material === "starlight") {
+      ctx.fillStyle = "rgba(4, 8, 22, 0.22)";
+      fillRoundedRect(ctx, innerX, innerY + innerSize * 0.52, innerSize, innerSize * 0.48, radius);
+      ctx.fillStyle = style.specular;
+      for (let index = 0; index < 3; index += 1) {
+        const starX = innerX + innerSize * (0.22 + ((seed + index) % 5) * 0.14);
+        const starY = innerY + innerSize * (0.22 + index * 0.18);
+        const starSize = Math.max(1.4, innerSize * 0.04);
+        ctx.fillRect(starX - starSize, starY, starSize * 2, 1.2);
+        ctx.fillRect(starX, starY - starSize, 1.2, starSize * 2);
+      }
+    } else if (style.material === "aurora") {
+      ctx.globalAlpha = 0.52;
+      for (let index = 0; index < 3; index += 1) {
+        ctx.strokeStyle = index % 2 === 0 ? style.specular : style.glow;
+        ctx.lineWidth = Math.max(1.4, innerSize * 0.06);
+        ctx.beginPath();
+        ctx.moveTo(innerX + innerSize * (0.18 + index * 0.18), innerY - innerSize * 0.02);
+        ctx.bezierCurveTo(
+          innerX + innerSize * (0.02 + index * 0.16),
+          innerY + innerSize * 0.36,
+          innerX + innerSize * (0.34 + index * 0.12),
+          innerY + innerSize * 0.64,
+          innerX + innerSize * (0.16 + index * 0.2),
+          innerY + innerSize * 1.02
+        );
+        ctx.stroke();
+      }
+      ctx.globalAlpha = 1;
+    } else if (style.material === "lava") {
+      ctx.fillStyle = "rgba(255, 210, 87, 0.08)";
+      fillRoundedRect(ctx, innerX, innerY + innerSize * 0.6, innerSize, innerSize * 0.4, radius);
+      ctx.shadowBlur = 10;
+      ctx.shadowColor = style.glow;
+      ctx.strokeStyle = style.specular;
+      ctx.lineWidth = Math.max(1.3, innerSize * 0.05);
+      ctx.beginPath();
+      ctx.moveTo(innerX + innerSize * 0.18, innerY + innerSize * 0.24);
+      ctx.lineTo(innerX + innerSize * 0.46, innerY + innerSize * 0.44);
+      ctx.lineTo(innerX + innerSize * 0.36, innerY + innerSize * 0.68);
+      ctx.lineTo(innerX + innerSize * 0.72, innerY + innerSize * 0.82);
+      ctx.stroke();
+      ctx.shadowBlur = 0;
+    }
+
+    ctx.restore();
+    ctx.save();
+    ctx.strokeStyle = style.edge;
+    ctx.lineWidth = Math.max(1.2, cellSize * 0.05);
+    strokeRoundedRect(ctx, innerX, innerY, innerSize, innerSize, radius);
     ctx.restore();
   }
 
@@ -997,14 +1355,19 @@ export class RussianBlockApp {
 
   drawInfoPanel(ctx, rect, title) {
     ctx.save();
-    ctx.fillStyle = COLORS.panel;
+    ctx.shadowBlur = 16;
+    ctx.shadowColor = this.theme.canvas.panelGlow;
+    ctx.fillStyle = this.theme.canvas.panel;
     fillRoundedRect(ctx, rect.x, rect.y, rect.w, rect.h, 20);
-    ctx.strokeStyle = COLORS.panelBorder;
+    ctx.shadowBlur = 0;
+    ctx.strokeStyle = this.theme.canvas.panelBorder;
     ctx.lineWidth = 1.5;
     strokeRoundedRect(ctx, rect.x, rect.y, rect.w, rect.h, 20);
-    ctx.fillStyle = COLORS.textMuted;
+    ctx.fillStyle = this.theme.canvas.accentSoft;
     ctx.font = "600 14px 'Trebuchet MS', 'Segoe UI', sans-serif";
     ctx.fillText(title.toUpperCase(), rect.x + 18, rect.y + 28);
+    ctx.fillStyle = this.theme.canvas.statsAccent;
+    fillRoundedRect(ctx, rect.x + 18, rect.y + 36, 42, 3, 2);
     ctx.restore();
   }
 
@@ -1027,7 +1390,7 @@ export class RussianBlockApp {
 
   drawEmptyPreviewCopy(ctx, rect, copy) {
     ctx.save();
-    ctx.fillStyle = COLORS.textMuted;
+    ctx.fillStyle = this.theme.canvas.emptyText;
     ctx.font = "500 14px 'Trebuchet MS', 'Segoe UI', sans-serif";
     ctx.textAlign = "center";
     ctx.fillText(copy, rect.x + rect.w / 2, rect.y + rect.h / 2 + 10);
@@ -1063,27 +1426,27 @@ export class RussianBlockApp {
       ["等级", String(this.engine.level)],
       ["消行", String(this.engine.lines)],
       ["暂存", this.engine.holdPieceType ?? "-"],
+      ["主题", this.theme.name],
     ];
 
     ctx.save();
-    ctx.fillStyle = COLORS.textPrimary;
+    ctx.fillStyle = this.theme.canvas.textMuted;
     ctx.font = "600 13px 'Trebuchet MS', 'Segoe UI', sans-serif";
-    ctx.fillStyle = COLORS.textMuted;
     ctx.fillText("当前分数", rect.x + 16, rect.y + 54);
-    ctx.fillStyle = COLORS.textPrimary;
+    ctx.fillStyle = this.theme.canvas.textPrimary;
     ctx.font = "700 22px 'Trebuchet MS', 'Segoe UI', sans-serif";
     ctx.fillText(formatScore(this.engine.score), rect.x + 16, rect.y + 82);
 
     ctx.font = "500 14px 'Trebuchet MS', 'Segoe UI', sans-serif";
-    ctx.fillStyle = COLORS.textMuted;
+    ctx.fillStyle = this.theme.canvas.textMuted;
     lines.forEach(([label, value], index) => {
-      const y = rect.y + 116 + index * 24;
+      const y = rect.y + 116 + index * 22;
       ctx.fillText(label, rect.x + 16, y);
-      ctx.fillStyle = COLORS.textPrimary;
+      ctx.fillStyle = this.theme.canvas.textPrimary;
       ctx.textAlign = "right";
       ctx.fillText(value, rect.x + rect.w - 16, y);
       ctx.textAlign = "left";
-      ctx.fillStyle = COLORS.textMuted;
+      ctx.fillStyle = this.theme.canvas.textMuted;
     });
     ctx.restore();
   }
@@ -1091,12 +1454,12 @@ export class RussianBlockApp {
   drawFooter(ctx, layout) {
     const footerText =
       this.engine.mode === "menu"
-        ? "Android 支持添加到主屏幕"
+        ? `${this.theme.name}主题已就绪，可添加到主屏幕`
         : layout.portrait
           ? "滑动移动 单击旋转 双击 Hold"
           : "P 暂停  R 重开  F 全屏";
     ctx.save();
-    ctx.fillStyle = "rgba(243, 246, 251, 0.72)";
+    ctx.fillStyle = this.theme.canvas.footer;
     ctx.font = "500 13px 'Trebuchet MS', 'Segoe UI', sans-serif";
     ctx.textAlign = "center";
     ctx.fillText(footerText, this.viewport.width / 2, layout.footerY);

@@ -37,5 +37,7 @@ export function buildProject({ outDir = distDir } = {}) {
   }
 }
 
-buildProject();
-console.log("Build completed in dist/");
+if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+  buildProject();
+  console.log("Build completed in dist/");
+}

@@ -1,4 +1,4 @@
-const CACHE_NAME = "russian-block-v4";
+const CACHE_NAME = "russian-block-v5";
 
 function scopedUrl(relativePath) {
   return new URL(relativePath, self.registration.scope).toString();

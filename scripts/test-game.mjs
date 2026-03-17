@@ -160,7 +160,7 @@ async function getBoardGeometry(page) {
     let cellSize;
 
     if (portrait) {
-      const topBand = Math.max(108, height * 0.17);
+      const topBand = Math.max(156, height * 0.22);
       cellSize = Math.min((width - 44) / 10, (height - topBand - 28) / 20);
       boardWidth = cellSize * 10;
       boardHeight = cellSize * 20;
@@ -192,6 +192,82 @@ function boardPoint(geometry, xRatio, yRatio) {
   };
 }
 
+function attachConsoleCapture(page, consoleErrors) {
+  page.on("console", (message) => {
+    if (message.type() === "error") {
+      consoleErrors.push(message.text());
+    }
+  });
+  page.on("pageerror", (error) => {
+    consoleErrors.push(error.message);
+  });
+}
+
+async function getActiveThemeId(page) {
+  return page.locator("#stage").evaluate((element) => element.dataset.themeId);
+}
+
+async function runThemeLoop(baseUrl, playwright) {
+  const { chromium } = playwright;
+  const browser = await chromium.launch({ headless: true });
+  const context = await browser.newContext({
+    locale: "zh-CN",
+    viewport: { width: 1440, height: 980 },
+  });
+  const page = await context.newPage();
+  const consoleErrors = [];
+  attachConsoleCapture(page, consoleErrors);
+  const getState = () => page.evaluate(() => JSON.parse(window.render_game_to_text()));
+
+  try {
+    await page.goto(`${baseUrl}?autostart=1&demo=1`, { waitUntil: "networkidle" });
+    await page.waitForTimeout(140);
+    assert((await getActiveThemeId(page)) === "classic", "Default theme should be classic");
+    assert((await getState()).mode === "playing", "Classic theme screenshot run should enter a playable game");
+    await page.screenshot({ path: path.join(screenshotDir, "theme-classic.png"), fullPage: false });
+
+    await page.goto(baseUrl, { waitUntil: "networkidle" });
+    await page.locator('[data-theme-card="ocean"]').click();
+    await page.waitForTimeout(80);
+    assert((await getActiveThemeId(page)) === "ocean", "Theme card selection should switch to ocean");
+
+    await page.goto(`${baseUrl}?autostart=1&demo=1`, { waitUntil: "networkidle" });
+    await page.waitForTimeout(140);
+    assert((await getActiveThemeId(page)) === "ocean", "Selected theme should persist into gameplay");
+    const oceanState = await getState();
+    assert(oceanState.mode === "playing", "Ocean theme should keep the game playable");
+    await page.screenshot({ path: path.join(screenshotDir, "theme-ocean.png"), fullPage: false });
+
+    const beforeSettingsTheme = await getState();
+    await page.locator("#settings-btn").click();
+    await page.waitForTimeout(60);
+    await page.locator('[data-theme-option="gem"]').click();
+    await page.waitForTimeout(120);
+    const afterSettingsTheme = await getState();
+    assert((await getActiveThemeId(page)) === "gem", "Settings theme switch should update the active theme");
+    assert(
+      afterSettingsTheme.mode === beforeSettingsTheme.mode &&
+        afterSettingsTheme.score === beforeSettingsTheme.score &&
+        afterSettingsTheme.lines === beforeSettingsTheme.lines,
+      "Theme switching in settings should not reset the running game"
+    );
+    await page.locator("#close-settings-btn").click();
+    await page.waitForTimeout(40);
+    await page.screenshot({ path: path.join(screenshotDir, "theme-gem.png"), fullPage: false });
+
+    await page.reload({ waitUntil: "networkidle" });
+    await page.waitForTimeout(80);
+    assert((await getActiveThemeId(page)) === "gem", "Theme selection should persist after reload");
+
+    if (consoleErrors.length > 0) {
+      throw new Error(`Theme Playwright loop produced console errors:\n${consoleErrors.join("\n")}`);
+    }
+  } finally {
+    await context.close();
+    await browser.close();
+  }
+}
+
 async function runMobileGestureLoop(baseUrl, playwright) {
   const { chromium, devices } = playwright;
   const browser = await chromium.launch({ headless: true });
@@ -202,15 +278,7 @@ async function runMobileGestureLoop(baseUrl, playwright) {
   });
   const page = await context.newPage();
   const consoleErrors = [];
-
-  page.on("console", (message) => {
-    if (message.type() === "error") {
-      consoleErrors.push(message.text());
-    }
-  });
-  page.on("pageerror", (error) => {
-    consoleErrors.push(error.message);
-  });
+  attachConsoleCapture(page, consoleErrors);
 
   try {
     await page.goto(`${baseUrl}?autostart=1`, { waitUntil: "networkidle" });
@@ -308,7 +376,7 @@ async function runMobileGestureLoop(baseUrl, playwright) {
 
     const beforeHardDrop = await getState();
     const hardDropStart = boardPoint(geometry, 0.52, 0.16);
-    const hardDropEnd = { x: hardDropStart.x, y: hardDropStart.y + geometry.cellSize * 3.2 };
+    const hardDropEnd = { x: hardDropStart.x, y: hardDropStart.y + geometry.cellSize * 4.8 };
     const hardDropPointerId = nextPointerId();
     await dispatchTouchSequence(
       page,
@@ -382,6 +450,7 @@ async function tryRunPlaywrightLoop(baseUrl) {
 
   fs.mkdirSync(screenshotDir, { recursive: true });
   await runDesktopSkillClient(baseUrl);
+  await runThemeLoop(baseUrl, playwright);
   await runMobileGestureLoop(baseUrl, playwright);
 }
 

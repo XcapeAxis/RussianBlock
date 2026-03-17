@@ -8,7 +8,6 @@ export const PIECE_ORDER = ["I", "J", "L", "O", "S", "T", "Z"];
 
 export const PIECES = {
   I: {
-    color: "#67e8f9",
     rotations: [
       cells(["....", "XXXX", "....", "...."]),
       cells(["..X.", "..X.", "..X.", "..X."]),
@@ -17,7 +16,6 @@ export const PIECES = {
     ],
   },
   J: {
-    color: "#7c8eff",
     rotations: [
       cells(["X...", "XXX.", "....", "...."]),
       cells([".XX.", ".X..", ".X..", "...."]),
@@ -26,7 +24,6 @@ export const PIECES = {
     ],
   },
   L: {
-    color: "#ffad42",
     rotations: [
       cells(["..X.", "XXX.", "....", "...."]),
       cells([".X..", ".X..", ".XX.", "...."]),
@@ -35,7 +32,6 @@ export const PIECES = {
     ],
   },
   O: {
-    color: "#ffd54d",
     rotations: [
       cells([".XX.", ".XX.", "....", "...."]),
       cells([".XX.", ".XX.", "....", "...."]),
@@ -44,7 +40,6 @@ export const PIECES = {
     ],
   },
   S: {
-    color: "#70e27c",
     rotations: [
       cells([".XX.", "XX..", "....", "...."]),
       cells([".X..", ".XX.", "..X.", "...."]),
@@ -53,7 +48,6 @@ export const PIECES = {
     ],
   },
   T: {
-    color: "#c084fc",
     rotations: [
       cells([".X..", "XXX.", "....", "...."]),
       cells([".X..", ".XX.", ".X..", "...."]),
@@ -62,7 +56,6 @@ export const PIECES = {
     ],
   },
   Z: {
-    color: "#ff7c7c",
     rotations: [
       cells(["XX..", ".XX.", "....", "...."]),
       cells(["..X.", ".XX.", ".X..", "...."]),
