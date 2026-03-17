@@ -74,3 +74,9 @@ npm run worker:deploy
 
 1. 用 Android Chrome 打开 GitHub Pages 固定链接。
 2. 如果浏览器提示，可通过“添加到主屏幕”安装为 PWA。
+
+## Sharing Updates
+
+- Replay watch pages now expose direct actions for copying the replay link, turning that replay into a new challenge, exporting a share card, and replaying the same seed.
+- Challenge and daily submissions now send the locally stored nickname when present, and the result screen surfaces the active target plus pass/fail status.
+- Leaderboard requests now support current-submission context so the UI can keep your latest run visible even when it falls below the top five.
