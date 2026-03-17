@@ -40,6 +40,37 @@ function formatTimer(durationMs) {
   return formatDuration(durationMs);
 }
 
+function buildReplayIdentity(replay) {
+  return {
+    replayId: replay?.replayId ?? "",
+    mode: replay?.mode ?? "",
+    seed: replay?.seed ?? "",
+    durationMs: Number(replay?.durationMs) || 0,
+    score: Number(replay?.result?.score) || 0,
+    lines: Number(replay?.result?.lines) || 0,
+  };
+}
+
+function replayIdentityEquals(leftReplay, rightReplay) {
+  if (!leftReplay || !rightReplay) {
+    return false;
+  }
+
+  const left = buildReplayIdentity(leftReplay);
+  const right = buildReplayIdentity(rightReplay);
+  if (left.replayId && right.replayId) {
+    return left.replayId === right.replayId;
+  }
+
+  return (
+    left.mode === right.mode &&
+    left.seed === right.seed &&
+    left.durationMs === right.durationMs &&
+    left.score === right.score &&
+    left.lines === right.lines
+  );
+}
+
 function safeText(value) {
   return String(value ?? "").replace(/[&<>"]/g, (token) => {
     return {
@@ -426,6 +457,12 @@ export class RussianBlockApp {
     this.shareCardButton.id = "share-card-btn";
     this.shareCardButton.textContent = "分享成绩卡";
     this.root.querySelector("#share-run-btn").insertAdjacentElement("afterend", this.shareCardButton);
+    this.viewReplayPageButton = document.createElement("button");
+    this.viewReplayPageButton.type = "button";
+    this.viewReplayPageButton.className = "secondary-btn";
+    this.viewReplayPageButton.id = "view-replay-page-btn";
+    this.viewReplayPageButton.textContent = "View Replay Page";
+    this.shareCardButton.insertAdjacentElement("afterend", this.viewReplayPageButton);
     this.watchPanel = document.createElement("section");
     this.watchPanel.id = "watch-panel";
     this.watchPanel.className = "watch-panel watch-panel--hidden";
@@ -435,6 +472,9 @@ export class RussianBlockApp {
       <p id="watch-panel-copy"></p>
       <div class="watch-panel-grid" id="watch-panel-grid"></div>
       <div class="overlay-actions watch-panel-actions">
+        <button type="button" class="secondary-btn" id="watch-copy-btn">Copy Link</button>
+        <button type="button" class="secondary-btn" id="watch-share-card-btn">Share Card</button>
+        <button type="button" class="secondary-btn" id="watch-challenge-btn">Create Challenge</button>
         <button type="button" class="primary-btn" id="watch-seed-btn">玩同一题</button>
         <button type="button" class="secondary-btn" id="watch-menu-btn">回到菜单</button>
       </div>
@@ -443,6 +483,9 @@ export class RussianBlockApp {
     this.watchPanelTitle = this.watchPanel.querySelector("#watch-panel-title");
     this.watchPanelCopy = this.watchPanel.querySelector("#watch-panel-copy");
     this.watchPanelGrid = this.watchPanel.querySelector("#watch-panel-grid");
+    this.watchCopyButton = this.watchPanel.querySelector("#watch-copy-btn");
+    this.watchShareCardButton = this.watchPanel.querySelector("#watch-share-card-btn");
+    this.watchChallengeButton = this.watchPanel.querySelector("#watch-challenge-btn");
     this.watchSeedButton = this.watchPanel.querySelector("#watch-seed-btn");
     this.watchMenuButton = this.watchPanel.querySelector("#watch-menu-btn");
     this.resultLeaderboard = document.createElement("section");
@@ -481,9 +524,13 @@ export class RussianBlockApp {
     this.root.querySelector("#replay-clip-btn").addEventListener("click", () => this.replayLastClip());
     this.root.querySelector("#share-run-btn").addEventListener("click", () => this.shareLastReplay());
     this.shareCardButton.addEventListener("click", () => void this.shareResultCard());
+    this.viewReplayPageButton.addEventListener("click", () => void this.openSharedReplayPageForReplay(this.lastReplay));
     this.root.querySelector("#challenge-run-btn").addEventListener("click", () => this.createChallengeFromLastRun());
     this.root.querySelector("#replay-restart-btn").addEventListener("click", () => this.restartReplay());
     this.root.querySelector("#exit-replay-btn").addEventListener("click", () => this.stopReplay());
+    this.watchCopyButton.addEventListener("click", () => void this.copyWatchedReplayLink());
+    this.watchShareCardButton.addEventListener("click", () => void this.shareWatchedReplayCard());
+    this.watchChallengeButton.addEventListener("click", () => void this.createChallengeFromWatchedReplay());
     this.watchSeedButton.addEventListener("click", () => this.startGameFromWatchedReplay());
     this.watchMenuButton.addEventListener("click", () => {
       this.stopReplay();
@@ -617,6 +664,92 @@ export class RussianBlockApp {
     this.remoteLeaderboardError = "";
   }
 
+  buildReplayShareUrl(code) {
+    return `${window.location.origin}${window.location.pathname}?watch=replay&code=${encodeURIComponent(code)}`;
+  }
+
+  buildChallengeShareUrl(code) {
+    return `${window.location.origin}${window.location.pathname}?play=challenge&code=${encodeURIComponent(code)}`;
+  }
+
+  getCachedReplayShare(replay) {
+    if (!replay || !this.lastReplayShare) {
+      return null;
+    }
+    return replayIdentityEquals(replay, this.lastReplayShare.replay) ? this.lastReplayShare : null;
+  }
+
+  rememberReplayShare(replay, share) {
+    if (!replay || !share?.code) {
+      return null;
+    }
+
+    this.lastReplayShare = {
+      replay,
+      code: share.code,
+      url: share.url ?? this.buildReplayShareUrl(share.code),
+      summary: share.summary ?? null,
+    };
+    return this.lastReplayShare;
+  }
+
+  async ensureReplayShare(replay) {
+    if (!replay) {
+      throw new Error("No replay is available.");
+    }
+    if (!this.apiClient.configured) {
+      throw new Error("Share API is not configured.");
+    }
+
+    const cached = this.getCachedReplayShare(replay);
+    if (cached) {
+      return cached;
+    }
+
+    const response = await this.apiClient.uploadReplay(replay);
+    return this.rememberReplayShare(replay, response);
+  }
+
+  buildRunSummaryFromReplay(replay) {
+    if (!replay) {
+      return null;
+    }
+    if (this.lastRunSummary && replayIdentityEquals(replay, this.lastReplay)) {
+      return this.lastRunSummary;
+    }
+
+    const result = replay.result ?? {};
+    return {
+      id: replay.replayId ?? `remote-${replay.mode}-${replay.seed}-${replay.durationMs}`,
+      gameMode: sanitizeGameMode(replay.mode),
+      label: getModeDefinition(sanitizeGameMode(replay.mode)).label,
+      outcome: result.mode === "completed" ? "completed" : "gameover",
+      reason: result.resultReason ?? "",
+      score: Number(result.score) || 0,
+      lines: Number(result.lines) || 0,
+      level: Number(result.level) || 1,
+      durationMs: Number(replay.durationMs) || 0,
+      seed: replay.seed ?? "",
+      combo: Number(result.bestCombo ?? result.combo) || 0,
+      b2b: Number(result.backToBack) || 0,
+      themeId: replay.themeId ?? this.theme.id,
+      createdAt: replay.createdAt ?? new Date().toISOString(),
+      replayId: replay.replayId ?? "",
+    };
+  }
+
+  async copyTextToClipboard(text) {
+    if (!text) {
+      return false;
+    }
+    try {
+      await navigator.clipboard?.writeText(text);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
   buildRemoteSubmissionPayload(runSummary, replayCode) {
     return {
       replayCode,
@@ -737,6 +870,7 @@ export class RussianBlockApp {
       finalSnapshot: this.engine.exportSnapshot(),
     });
     this.lastReplay = replay;
+    this.lastReplayShare = null;
     this.lastRunSummary = this.buildRunSummary(replay);
     this.profile = recordRun(this.profile, this.lastRunSummary, replay);
     saveProfile(this.profile);
@@ -776,7 +910,7 @@ export class RussianBlockApp {
     this.updateUiState();
 
     try {
-      const replayResponse = await this.apiClient.uploadReplay(replay);
+      const replayResponse = await this.ensureReplayShare(replay);
       const payload = this.buildRemoteSubmissionPayload(runSummary, replayResponse.code);
       if (context.type === "daily") {
         await this.apiClient.submitDaily(context.date, payload);
@@ -935,18 +1069,55 @@ export class RussianBlockApp {
 
     const localPayload = JSON.stringify(replay);
     if (!this.apiClient.configured) {
-      await navigator.clipboard?.writeText(localPayload).catch(() => {});
+      await this.copyTextToClipboard(localPayload);
       this.statusMessage = "分享 API 未配置，已尝试把回放 JSON 复制到剪贴板。";
       this.updateUiState();
       return;
     }
 
     try {
-      const response = await this.apiClient.uploadReplay(replay);
-      await navigator.clipboard?.writeText(response.url ?? response.code ?? "").catch(() => {});
+      const response = await this.ensureReplayShare(replay);
+      await this.copyTextToClipboard(response.url ?? response.code ?? "");
       this.statusMessage = `已上传回放，分享码 ${response.code} 已尝试复制。`;
     } catch (error) {
       this.statusMessage = error instanceof Error ? error.message : "上传回放失败。";
+    }
+    this.updateUiState();
+  }
+
+  async copyWatchedReplayLink() {
+    if (!this.watchSession?.replay) {
+      return;
+    }
+
+    try {
+      const response = await this.ensureReplayShare(this.watchSession.replay);
+      await this.copyTextToClipboard(response.url ?? response.code ?? "");
+      this.statusMessage = `Replay link copied: ${response.code}`;
+    } catch (error) {
+      this.statusMessage = error instanceof Error ? error.message : "Failed to copy replay link.";
+    }
+    this.updateUiState();
+  }
+
+  async openSharedReplayPageForReplay(replay) {
+    if (!replay) {
+      this.statusMessage = "No replay is available.";
+      this.updateUiState();
+      return;
+    }
+
+    try {
+      const response = await this.ensureReplayShare(replay);
+      const url = response.url ?? this.buildReplayShareUrl(response.code);
+      const opened = window.open(url, "_blank", "noopener");
+      if (!opened) {
+        window.location.assign(url);
+        return;
+      }
+      this.statusMessage = `Replay page ready: ${response.code}`;
+    } catch (error) {
+      this.statusMessage = error instanceof Error ? error.message : "Failed to open replay page.";
     }
     this.updateUiState();
   }
@@ -995,8 +1166,7 @@ export class RussianBlockApp {
     ctx.restore();
   }
 
-  async shareResultCard() {
-    const runSummary = this.getLatestResultForSharing();
+  async shareResultCard(runSummary = this.getLatestResultForSharing()) {
     if (!runSummary) {
       this.statusMessage = "先完成一局，才能生成成绩卡。";
       this.updateUiState();
@@ -1040,6 +1210,19 @@ export class RussianBlockApp {
     this.updateUiState();
   }
 
+  async shareWatchedReplayCard() {
+    const replay = this.watchSession?.replay;
+    const runSummary = this.buildRunSummaryFromReplay(replay);
+    if (!runSummary) {
+      return;
+    }
+    await this.shareResultCard(runSummary);
+    if (this.statusMessage.includes("PNG") || this.statusMessage.includes("分享")) {
+      this.statusMessage = "Replay share card exported.";
+      this.updateUiState();
+    }
+  }
+
   async buildShareCardAsset(runSummary) {
     const width = 1200;
     const height = 1600;
@@ -1052,7 +1235,10 @@ export class RussianBlockApp {
     }
 
     const submission = this.getSubmissionForRun(runSummary);
-    const pageUrl = `${window.location.origin}${window.location.pathname}`;
+    const replayShare = replayIdentityEquals(this.lastReplay, { replayId: runSummary.replayId, mode: runSummary.gameMode, seed: runSummary.seed, durationMs: runSummary.durationMs, result: { score: runSummary.score, lines: runSummary.lines } })
+      ? this.getCachedReplayShare(this.lastReplay)
+      : null;
+    const pageUrl = replayShare?.url ?? `${window.location.origin}${window.location.pathname}`;
     const background = ctx.createLinearGradient(0, 0, width, height);
     background.addColorStop(0, this.theme.canvas.backgroundStart);
     background.addColorStop(1, this.theme.canvas.backgroundEnd);
@@ -1163,7 +1349,46 @@ export class RussianBlockApp {
     };
   }
 
+  async createChallengeFromReplay(replay, runSummary = this.buildRunSummaryFromReplay(replay)) {
+    if (!replay || !runSummary) {
+      this.statusMessage = "Finish a run before creating a challenge.";
+      this.updateUiState();
+      return null;
+    }
+    if (!this.apiClient.configured) {
+      this.statusMessage = "Configure API Base first.";
+      this.updateUiState();
+      return null;
+    }
+
+    try {
+      const replayResponse = await this.ensureReplayShare(replay);
+      const challengeResponse = await this.apiClient.createChallenge({
+        kind: "score_chase",
+        mode: replay.mode,
+        seed: replay.seed,
+        replayCode: replayResponse.code,
+        goal: {
+          score: runSummary.score,
+          lines: runSummary.lines,
+          durationMs: runSummary.durationMs,
+        },
+        title: `${runSummary.label} Challenge`,
+      });
+      const url = challengeResponse.url ?? this.buildChallengeShareUrl(challengeResponse.code);
+      await this.copyTextToClipboard(url);
+      this.statusMessage = `Challenge ready: ${challengeResponse.code}`;
+      this.updateUiState();
+      return challengeResponse;
+    } catch (error) {
+      this.statusMessage = error instanceof Error ? error.message : "Failed to create challenge.";
+      this.updateUiState();
+      return null;
+    }
+  }
+
   async createChallengeFromLastRun() {
+    return this.createChallengeFromReplay(this.lastReplay, this.lastRunSummary);
     if (!this.lastReplay || !this.lastRunSummary) {
       this.statusMessage = "先完成一局，才能生成挑战。";
       this.updateUiState();
@@ -1198,6 +1423,13 @@ export class RussianBlockApp {
       this.statusMessage = error instanceof Error ? error.message : "生成挑战失败。";
     }
     this.updateUiState();
+  }
+
+  async createChallengeFromWatchedReplay() {
+    if (!this.watchSession?.replay) {
+      return null;
+    }
+    return this.createChallengeFromReplay(this.watchSession.replay);
   }
 
   async openChallengeFromCode(code) {
@@ -1251,6 +1483,11 @@ export class RussianBlockApp {
       const response = await this.apiClient.getReplay(normalizedCode);
       const replay = response.replay ?? response;
       this.lastReplay = replay;
+      this.rememberReplayShare(replay, {
+        code: normalizedCode,
+        url: response.url ?? this.buildReplayShareUrl(normalizedCode),
+        summary: response.summary ?? null,
+      });
       this.shareCodeInput.value = normalizedCode;
       this.statusMessage = `已载入回放 ${normalizedCode}。`;
       this.startReplay(replay, {
@@ -1259,6 +1496,8 @@ export class RussianBlockApp {
         watchSession: {
           code: normalizedCode,
           replay,
+          summary: response.summary ?? null,
+          shareUrl: response.url ?? this.buildReplayShareUrl(normalizedCode),
         },
       });
       this.updateUiState();
@@ -2005,11 +2244,14 @@ export class RussianBlockApp {
     if (this.replayPlayer && this.watchSession?.replay) {
       const watchedReplay = this.watchSession.replay;
       this.watchPanelTitle.textContent = `回放码 ${this.watchSession.code}`;
-      this.watchPanelCopy.textContent = `${getModeDefinition(watchedReplay.mode).label} · Seed ${watchedReplay.seed}`;
+      this.watchPanelCopy.textContent = "Copy it, turn it into a challenge, or jump back onto the same seed.";
       this.watchPanelGrid.innerHTML = `
+        <div class="watch-panel-chip"><strong>${safeText(this.watchSession.code)}</strong><span>Code</span></div>
+        <div class="watch-panel-chip"><strong>${safeText(getModeDefinition(watchedReplay.mode).name)}</strong><span>Mode</span></div>
         <div class="watch-panel-chip"><strong>${formatScore(watchedReplay.result?.score ?? 0)}</strong><span>分数</span></div>
         <div class="watch-panel-chip"><strong>${watchedReplay.result?.lines ?? 0}</strong><span>消行</span></div>
         <div class="watch-panel-chip"><strong>${formatDuration(watchedReplay.durationMs ?? 0)}</strong><span>时长</span></div>
+        <div class="watch-panel-chip"><strong>${safeText(watchedReplay.seed || "AUTO")}</strong><span>Seed</span></div>
         <div class="watch-panel-chip"><strong>${safeText(getTheme(watchedReplay.themeId).name)}</strong><span>主题</span></div>
       `;
     } else {

@@ -55,6 +55,7 @@ async function startMockApiServer(appBaseUrl) {
   const state = {
     replayUploads: [],
     replayMap: {},
+    challengeCreates: [],
     challengeSubmissions: [],
     dailySubmissions: [],
   };
@@ -81,6 +82,15 @@ async function startMockApiServer(appBaseUrl) {
       sendJson(response, 200, {
         code,
         url: `${appBaseUrl}?watch=replay&code=${code}`,
+        summary: body.replay
+          ? {
+              replayId: body.replay.replayId,
+              mode: body.replay.mode,
+              seed: body.replay.seed,
+              durationMs: body.replay.durationMs,
+              result: body.replay.result ?? {},
+            }
+          : null,
       });
       return;
     }
@@ -94,6 +104,30 @@ async function startMockApiServer(appBaseUrl) {
       sendJson(response, 200, {
         code: segments[2],
         replay,
+        summary: replay
+          ? {
+              replayId: replay.replayId,
+              mode: replay.mode,
+              seed: replay.seed,
+              durationMs: replay.durationMs,
+              result: replay.result ?? {},
+            }
+          : null,
+      });
+      return;
+    }
+
+    if (request.method === "POST" && segments[0] === "api" && segments[1] === "challenges" && segments.length === 2) {
+      const body = await readRequestBody(request);
+      const code = `CGEN${state.challengeCreates.length + 1}`;
+      state.challengeCreates.push({
+        code,
+        ...body,
+      });
+      sendJson(response, 200, {
+        code,
+        url: `${appBaseUrl}?play=challenge&code=${code}`,
+        challenge: body,
       });
       return;
     }
@@ -104,6 +138,12 @@ async function startMockApiServer(appBaseUrl) {
         mode: "ultra",
         seed: "shared-ultra-seed",
         title: "Mock challenge",
+        goal: {
+          score: 1200,
+          lines: 12,
+          durationMs: 120000,
+        },
+        replayCode: "R1",
       });
       return;
     }
@@ -663,6 +703,32 @@ async function runSharingFlowLoop(baseUrl, playwright) {
         apiBase,
       })
     );
+    window.__clipboardWrites = [];
+    window.__openedUrls = [];
+    window.__downloadClicks = [];
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true,
+      value: {
+        writeText(text) {
+          window.__clipboardWrites.push(String(text));
+          return Promise.resolve();
+        },
+      },
+    });
+    window.open = (url) => {
+      window.__openedUrls.push(String(url));
+      return { closed: false };
+    };
+    const originalAnchorClick = HTMLAnchorElement.prototype.click;
+    HTMLAnchorElement.prototype.click = function patchedAnchorClick() {
+      if (this.download) {
+        window.__downloadClicks.push({
+          download: String(this.download),
+          href: String(this.href),
+        });
+      }
+      return originalAnchorClick.call(this);
+    };
   }, mockApi.baseUrl);
 
   try {
@@ -692,6 +758,12 @@ async function runSharingFlowLoop(baseUrl, playwright) {
         return Boolean(target && /#1/.test(target.textContent ?? "") && /Anonymous/.test(target.textContent ?? ""));
       }
     );
+    await page.locator("#view-replay-page-btn").click();
+    await page.waitForFunction(() => Array.isArray(window.__openedUrls) && window.__openedUrls.some((url) => /watch=replay&code=R1/.test(url)));
+    assert(
+      mockApi.state.replayUploads.length === 1,
+      "Opening the replay page from the result screen should reuse the cached replay upload"
+    );
     await page.evaluate(() => {
       try {
         Object.defineProperty(navigator, "share", { configurable: true, value: undefined });
@@ -717,6 +789,20 @@ async function runSharingFlowLoop(baseUrl, playwright) {
       const list = document.querySelector("#watch-panel-grid");
       return Boolean(title && list && /R1/.test(title.textContent ?? "") && /120000|02:00/.test(list.textContent ?? ""));
     });
+    await page.locator("#watch-copy-btn").click();
+    await page.waitForFunction(() => Array.isArray(window.__clipboardWrites) && window.__clipboardWrites.some((value) => /watch=replay&code=R1/.test(value)));
+    await page.locator("#watch-challenge-btn").click();
+    await waitForCondition(() => mockApi.state.challengeCreates.length === 1, 3000, "challenge creation from watch page");
+    assert(
+      mockApi.state.challengeCreates[0].replayCode === "R1",
+      "Creating a challenge from a watched replay should reuse the existing replay code"
+    );
+    assert(
+      mockApi.state.replayUploads.length === 1,
+      "Creating a challenge from a watched replay should not upload the same replay twice"
+    );
+    await page.locator("#watch-share-card-btn").click();
+    await page.waitForTimeout(150);
     await page.screenshot({ path: path.join(screenshotDir, "sharing-watch.png"), fullPage: false });
     await page.locator("#watch-seed-btn").click();
     await page.waitForFunction(() => {
