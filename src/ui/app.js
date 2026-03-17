@@ -46,8 +46,9 @@ const DOUBLE_TAP_DISTANCE_PX = 24;
 const TAP_SLOP_PX = 18;
 const HORIZONTAL_GESTURE_RATIO = 0.6;
 const SOFT_DROP_GESTURE_RATIO = 0.75;
-const HARD_DROP_GESTURE_RATIO = 2.5;
-const HARD_DROP_MIN_VELOCITY = 1.2;
+const HARD_DROP_GESTURE_RATIO = 4.2;
+const HARD_DROP_MIN_VELOCITY = 1.85;
+const HARD_DROP_VERTICAL_DOMINANCE = 1.6;
 
 function distanceBetweenPoints(a, b) {
   return Math.hypot(a.x - b.x, a.y - b.y);
@@ -442,6 +443,7 @@ export class RussianBlockApp {
       lastX: event.clientX,
       lastY: event.clientY,
       lastMoveTime: now,
+      lastVelocityY: 0,
       horizontalCarry: 0,
       movedHorizontally: false,
       softDropActive: false,
@@ -504,21 +506,7 @@ export class RussianBlockApp {
 
     const deltaTime = Math.max(1, now - gesture.lastMoveTime);
     const velocityY = stepY / deltaTime;
-    if (
-      !gesture.hardDropped &&
-      totalY >= gesture.cellSize * HARD_DROP_GESTURE_RATIO &&
-      velocityY >= HARD_DROP_MIN_VELOCITY
-    ) {
-      if (gesture.softDropActive) {
-        this.setSoftDrop(false);
-        gesture.softDropActive = false;
-      }
-      this.clearPendingTouchTap();
-      this.engine.hardDrop();
-      this.audio.play("drop");
-      gesture.hardDropped = true;
-      changed = true;
-    }
+    gesture.lastVelocityY = velocityY;
 
     gesture.lastX = event.clientX;
     gesture.lastY = event.clientY;
@@ -544,6 +532,12 @@ export class RussianBlockApp {
     const totalY = event.clientY - gesture.startY;
     const travelDistance = Math.hypot(totalX, totalY);
     const now = performance.now();
+    const shouldHardDrop =
+      event.type === "pointerup" &&
+      !gesture.hardDropped &&
+      totalY >= gesture.cellSize * HARD_DROP_GESTURE_RATIO &&
+      totalY > Math.abs(totalX) * HARD_DROP_VERTICAL_DOMINANCE &&
+      gesture.lastVelocityY >= HARD_DROP_MIN_VELOCITY;
 
     if (gesture.softDropActive) {
       this.setSoftDrop(false);
@@ -551,6 +545,14 @@ export class RussianBlockApp {
     }
 
     this.activeGesture = null;
+
+    if (shouldHardDrop) {
+      this.clearPendingTouchTap();
+      this.engine.hardDrop();
+      this.audio.play("drop");
+      this.afterStateChange();
+      return;
+    }
 
     const shouldTap =
       event.type === "pointerup" &&
