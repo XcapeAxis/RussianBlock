@@ -1,0 +1,13 @@
+Original prompt: 你可以构建一个在windows和android手机都能玩，且可以快速发送给身边朋友的俄罗斯方块游戏吗
+
+## 2026-03-17
+- 初始化空仓库并开始搭建单人俄罗斯方块 Web/PWA。
+- 目标范围固定为单人俄罗斯方块 Web/PWA，加强版但无后端。
+- 由于 `npm install` 多次在拉取依赖时遭遇 `ECONNRESET` 并长期阻塞，工程骨架改为零依赖静态实现，但保留 `npm run dev/build/preview/test:game` 入口和同样的交付形态。
+- 已完成：核心玩法、Canvas 渲染、键盘/触控输入、PWA manifest + service worker、README、图标资源、引擎级烟雾测试脚本。
+- 已验证：`npm run build` 成功；`npm run test:game` 成功；Chrome 无头截图确认了开始页和移动端竖屏游戏界面可正常渲染。
+- 新增：已安装 `playwright` 包。由于 Playwright 自带 Chromium 下载在当前网络下卡住，`test:game` 通过 `scripts/playwright-bootstrap.mjs` 将技能客户端绑定到本机 Chrome，可继续生成 `output/web-game/shot-0.png` 与 `state-0.json` 做真实浏览器回归。
+- 调整：安卓端主要交互已改为棋盘区滑屏/轻触，底部按钮栏已移除，顶部保留暂停和设置。
+- 调整：`npm run test:game` 现在同时覆盖桌面键盘回归和安卓手势回归，并输出 `output/web-game/mobile-gesture.png` 与 `mobile-state.json`。
+- 调整：已补齐 GitHub Pages Actions 工作流与相对路径静态发布方案，固定 URL 目标为 `https://<github-username>.github.io/RussianBlock/`。
+- 限制：当前环境没有安装 `gh`，也没有现成的 GitHub 远端，因此仓库创建、首次推送和 Pages 真正上线仍需在有 GitHub 凭据的环境里完成。
