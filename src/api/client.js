@@ -76,4 +76,8 @@ export class RussianBlockApiClient {
       body: payload,
     });
   }
+
+  getLeaderboard(board) {
+    return this.request(`/api/leaderboards/${encodeURIComponent(board)}`);
+  }
 }

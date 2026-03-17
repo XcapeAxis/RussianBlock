@@ -399,6 +399,75 @@ input {
   color: var(--muted);
 }
 
+.leaderboard-panel {
+  margin-top: 16px;
+  padding: 14px;
+  border-radius: 18px;
+  background: color-mix(in srgb, var(--button-alt) 84%, transparent);
+  border: 1px solid color-mix(in srgb, var(--panel-border) 84%, transparent);
+}
+
+.leaderboard-panel--hidden {
+  display: none;
+}
+
+.leaderboard-panel-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.leaderboard-panel-head strong {
+  font-size: 15px;
+  color: var(--text);
+}
+
+.leaderboard-panel-head span {
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.leaderboard-list {
+  display: grid;
+  gap: 10px;
+  margin-top: 12px;
+}
+
+.leaderboard-row,
+.leaderboard-empty {
+  padding: 12px 14px;
+  border-radius: 14px;
+  background: color-mix(in srgb, var(--chip) 88%, transparent);
+  border: 1px solid color-mix(in srgb, var(--panel-border) 80%, transparent);
+}
+
+.leaderboard-row {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 12px;
+}
+
+.leaderboard-rank,
+.leaderboard-score {
+  font-weight: 700;
+  color: var(--accent-soft);
+}
+
+.leaderboard-copy strong {
+  display: block;
+  color: var(--text);
+  font-size: 14px;
+}
+
+.leaderboard-copy span,
+.leaderboard-empty {
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
 .replay-banner {
   position: absolute;
   left: 18px;

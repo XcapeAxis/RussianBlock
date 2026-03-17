@@ -192,6 +192,9 @@ export class RussianBlockApp {
     this.statusMessage = "";
     this.activeRemoteSession = null;
     this.lastRemoteSubmission = null;
+    this.remoteLeaderboard = null;
+    this.remoteLeaderboardStatus = "idle";
+    this.remoteLeaderboardError = "";
 
     this.horizontalState = {
       left: createHoldState(),
@@ -422,6 +425,20 @@ export class RussianBlockApp {
     this.shareCardButton.id = "share-card-btn";
     this.shareCardButton.textContent = "分享成绩卡";
     this.root.querySelector("#share-run-btn").insertAdjacentElement("afterend", this.shareCardButton);
+    this.resultLeaderboard = document.createElement("section");
+    this.resultLeaderboard.id = "result-leaderboard";
+    this.resultLeaderboard.className = "leaderboard-panel leaderboard-panel--hidden";
+    this.resultLeaderboard.innerHTML = `
+      <div class="leaderboard-panel-head">
+        <strong id="leaderboard-title">排行榜</strong>
+        <span id="leaderboard-status"></span>
+      </div>
+      <div class="leaderboard-list" id="leaderboard-list"></div>
+    `;
+    this.resultGrid.insertAdjacentElement("afterend", this.resultLeaderboard);
+    this.leaderboardTitle = this.resultLeaderboard.querySelector("#leaderboard-title");
+    this.leaderboardStatus = this.resultLeaderboard.querySelector("#leaderboard-status");
+    this.leaderboardList = this.resultLeaderboard.querySelector("#leaderboard-list");
   }
 
   bindEvents() {
@@ -570,6 +587,9 @@ export class RussianBlockApp {
   setRemoteSession(context) {
     this.activeRemoteSession = context ? { ...context } : null;
     this.lastRemoteSubmission = null;
+    this.remoteLeaderboard = null;
+    this.remoteLeaderboardStatus = "idle";
+    this.remoteLeaderboardError = "";
   }
 
   buildRemoteSubmissionPayload(runSummary, replayCode) {
@@ -580,6 +600,53 @@ export class RussianBlockApp {
       lines: runSummary.lines,
       durationMs: runSummary.durationMs,
     };
+  }
+
+  getBoardKeyFromContext(context) {
+    if (!context) {
+      return "";
+    }
+    return context.type === "daily" ? `daily:${context.date}` : context.code;
+  }
+
+  async refreshRemoteLeaderboard(context = this.activeRemoteSession) {
+    if (!context || !this.apiClient.configured) {
+      this.remoteLeaderboard = null;
+      this.remoteLeaderboardStatus = "idle";
+      this.remoteLeaderboardError = "";
+      this.updateUiState();
+      return;
+    }
+
+    const board = this.getBoardKeyFromContext(context);
+    this.remoteLeaderboard = {
+      context: { ...context },
+      board,
+      entries: this.remoteLeaderboard?.board === board ? this.remoteLeaderboard.entries : [],
+    };
+    this.remoteLeaderboardStatus = "loading";
+    this.remoteLeaderboardError = "";
+    this.updateUiState();
+
+    try {
+      const response = await this.apiClient.getLeaderboard(board);
+      this.remoteLeaderboard = {
+        context: { ...context },
+        board,
+        entries: Array.isArray(response.entries) ? response.entries : [],
+      };
+      this.remoteLeaderboardStatus = "ready";
+    } catch (error) {
+      this.remoteLeaderboard = {
+        context: { ...context },
+        board,
+        entries: [],
+      };
+      this.remoteLeaderboardStatus = "error";
+      this.remoteLeaderboardError = error instanceof Error ? error.message : "Failed to load leaderboard.";
+    }
+
+    this.updateUiState();
   }
 
   beginRecordingSession() {
@@ -690,6 +757,8 @@ export class RussianBlockApp {
         context,
         replayCode: replayResponse.code,
       };
+      await this.refreshRemoteLeaderboard(context);
+      return;
     } catch (error) {
       this.lastRemoteSubmission = {
         runId: runSummary.id,
@@ -1638,6 +1707,9 @@ export class RussianBlockApp {
     this.beginRecordingSession();
     this.audio.play("click");
     this.afterStateChange();
+    if (this.activeRemoteSession) {
+      void this.refreshRemoteLeaderboard(this.activeRemoteSession);
+    }
   }
 
   populateDemoBoard() {
@@ -1870,6 +1942,7 @@ export class RussianBlockApp {
     const latestRun = this.lastRunSummary ?? this.profile.runs[0] ?? null;
     const latestSubmission =
       latestRun && this.lastRemoteSubmission?.runId === latestRun.id ? this.lastRemoteSubmission : null;
+    const leaderboardContext = latestSubmission?.context ?? this.activeRemoteSession;
     if (this.engine.mode === "completed") {
       this.resultEyebrow.textContent = "Completed";
       this.resultTitle.textContent = "挑战完成";
@@ -1901,6 +1974,49 @@ export class RussianBlockApp {
               : "失败"
         }</strong><span>分享状态</span></div>
       `;
+    }
+    this.resultLeaderboard.classList.toggle("leaderboard-panel--hidden", !leaderboardContext);
+    if (leaderboardContext) {
+      this.leaderboardTitle.textContent =
+        leaderboardContext.type === "daily"
+          ? `今日挑战 ${leaderboardContext.date}`
+          : `挑战榜 ${leaderboardContext.code}`;
+      this.leaderboardStatus.textContent =
+        this.remoteLeaderboardStatus === "loading"
+          ? "刷新中"
+          : this.remoteLeaderboardStatus === "error"
+            ? "加载失败"
+            : `${this.remoteLeaderboard?.entries?.length ?? 0} 条`;
+      if (this.remoteLeaderboardStatus === "loading" && (this.remoteLeaderboard?.entries?.length ?? 0) === 0) {
+        this.leaderboardList.innerHTML = `<div class="leaderboard-empty">正在刷新排行榜…</div>`;
+      } else if (this.remoteLeaderboardStatus === "error") {
+        this.leaderboardList.innerHTML = `<div class="leaderboard-empty">${safeText(
+          this.remoteLeaderboardError || "排行榜暂时不可用。"
+        )}</div>`;
+      } else if ((this.remoteLeaderboard?.entries?.length ?? 0) === 0) {
+        this.leaderboardList.innerHTML = `<div class="leaderboard-empty">还没有成绩，等你第一个上榜。</div>`;
+      } else {
+        this.leaderboardList.innerHTML = this.remoteLeaderboard.entries
+          .slice(0, 5)
+          .map((entry, index) => {
+            const name = String(entry.nickname ?? "").trim() || "Anonymous";
+            return `
+              <div class="leaderboard-row">
+                <span class="leaderboard-rank">#${index + 1}</span>
+                <div class="leaderboard-copy">
+                  <strong>${safeText(name)}</strong>
+                  <span>${Number(entry.lines) || 0} lines · ${formatDuration(Number(entry.duration_ms ?? entry.durationMs) || 0)}</span>
+                </div>
+                <span class="leaderboard-score">${formatScore(Number(entry.score) || 0)}</span>
+              </div>
+            `;
+          })
+          .join("");
+      }
+    } else {
+      this.leaderboardTitle.textContent = "排行榜";
+      this.leaderboardStatus.textContent = "";
+      this.leaderboardList.innerHTML = "";
     }
     this.statusCopy.textContent =
       this.statusMessage ||

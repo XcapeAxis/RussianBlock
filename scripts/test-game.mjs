@@ -136,6 +136,23 @@ async function startMockApiServer(appBaseUrl) {
       return;
     }
 
+    if (request.method === "GET" && segments[0] === "api" && segments[1] === "leaderboards" && segments[2]) {
+      const board = decodeURIComponent(segments[2]);
+      const source =
+        board.startsWith("daily:") ? state.dailySubmissions : state.challengeSubmissions;
+      const entries = source
+        .filter((entry) => (board.startsWith("daily:") ? `daily:${entry.date}` : entry.code) === board)
+        .map((entry) => ({
+          nickname: entry.nickname ?? null,
+          score: entry.score ?? 0,
+          lines: entry.lines ?? 0,
+          duration_ms: entry.durationMs ?? 0,
+        }))
+        .sort((left, right) => (right.score - left.score) || (left.duration_ms - right.duration_ms));
+      sendJson(response, 200, { board, entries });
+      return;
+    }
+
     sendJson(response, 404, { error: "Not found" });
   });
 
@@ -654,6 +671,12 @@ async function runSharingFlowLoop(baseUrl, playwright) {
       "Challenge submission should include the uploaded replay code"
     );
     await expectResultText(page, /已提交/);
+    await page.waitForFunction(
+      () => {
+        const target = document.querySelector("#leaderboard-list");
+        return Boolean(target && /#1/.test(target.textContent ?? "") && /Anonymous/.test(target.textContent ?? ""));
+      }
+    );
     await page.evaluate(() => {
       try {
         Object.defineProperty(navigator, "share", { configurable: true, value: undefined });
@@ -682,6 +705,18 @@ async function runSharingFlowLoop(baseUrl, playwright) {
     assert(
       mockApi.state.dailySubmissions[0].replayCode === "R2",
       "Daily submission should include the uploaded replay code"
+    );
+    await page.waitForFunction(
+      () => {
+        const title = document.querySelector("#leaderboard-title");
+        const list = document.querySelector("#leaderboard-list");
+        return Boolean(
+          title &&
+            list &&
+            /今日挑战/.test(title.textContent ?? "") &&
+            /#1/.test(list.textContent ?? "")
+        );
+      }
     );
 
     if (consoleErrors.length > 0) {
