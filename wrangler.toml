@@ -1,0 +1,11 @@
+name = "russian-block-api"
+main = "workers/src/index.js"
+compatibility_date = "2026-03-17"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "russian-block"
+database_id = "replace-with-your-d1-database-id"
+
+[vars]
+APP_BASE_URL = "https://xcapeaxis.github.io/RussianBlock/"

@@ -208,7 +208,15 @@ export class RussianBlockApp {
     this.buildDom();
     this.applyTheme();
     this.bindEvents();
-    if (this.query.get("autostart") === "1") {
+    this.shareCodeInput.value = this.query.get("code") ?? "";
+    const hasSharedRoute =
+      (this.query.get("play") === "challenge" && Boolean(this.query.get("code"))) ||
+      (this.query.get("watch") === "replay" && Boolean(this.query.get("code"))) ||
+      (this.query.get("play") === "puzzle" && Boolean(this.query.get("code")));
+    if (hasSharedRoute) {
+      this.statusMessage = "正在载入分享内容…";
+      void this.bootstrapSharedRoute();
+    } else if (this.query.get("autostart") === "1") {
       this.startGame({ gameMode: this.selectedGameMode, seed: this.selectedSeed });
       if (this.query.get("demo") === "1") {
         this.populateDemoBoard();
@@ -281,6 +289,20 @@ export class RussianBlockApp {
                 </div>
                 <div class="history-list" id="history-list"></div>
               </div>
+              <div class="menu-history">
+                <div class="menu-history-head">
+                  <span class="theme-showcase-label">挑战与分享</span>
+                </div>
+                <label class="seed-field">
+                  <span class="theme-showcase-label">挑战码 / 回放码</span>
+                  <input type="text" id="share-code-input" placeholder="输入 code 后可直接挑战或观战" />
+                </label>
+                <div class="overlay-actions">
+                  <button type="button" class="secondary-btn menu-mini-btn" id="play-challenge-btn">开始挑战</button>
+                  <button type="button" class="secondary-btn menu-mini-btn" id="watch-shared-replay-btn">观看回放</button>
+                  <button type="button" class="secondary-btn menu-mini-btn" id="load-daily-btn">今日挑战</button>
+                </div>
+              </div>
               <p class="overlay-hint" id="status-copy"></p>
               <p class="overlay-hint">触屏：左右滑移动，单击旋转，下拖软降，下甩硬降，双击 Hold。键盘：A/D 移动，W 旋转，Space 硬降，C Hold。</p>
             </div>
@@ -308,6 +330,7 @@ export class RussianBlockApp {
                 <button type="button" class="secondary-btn" id="replay-full-btn">回放本局</button>
                 <button type="button" class="secondary-btn" id="replay-clip-btn">回放最后 8 秒</button>
                 <button type="button" class="secondary-btn" id="share-run-btn">导出回放</button>
+                <button type="button" class="secondary-btn" id="challenge-run-btn">生成挑战</button>
               </div>
             </div>
           </div>
@@ -384,6 +407,7 @@ export class RussianBlockApp {
     this.menuModeDescription = this.root.querySelector("#mode-description");
     this.seedField = this.root.querySelector("#seed-field");
     this.seedInput = this.root.querySelector("#seed-input");
+    this.shareCodeInput = this.root.querySelector("#share-code-input");
     this.menuSummary = this.root.querySelector("#menu-summary");
     this.historyList = this.root.querySelector("#history-list");
     this.statusCopy = this.root.querySelector("#status-copy");
@@ -411,8 +435,12 @@ export class RussianBlockApp {
     this.root.querySelector("#replay-full-btn").addEventListener("click", () => this.replayLastRun());
     this.root.querySelector("#replay-clip-btn").addEventListener("click", () => this.replayLastClip());
     this.root.querySelector("#share-run-btn").addEventListener("click", () => this.shareLastReplay());
+    this.root.querySelector("#challenge-run-btn").addEventListener("click", () => this.createChallengeFromLastRun());
     this.root.querySelector("#replay-restart-btn").addEventListener("click", () => this.restartReplay());
     this.root.querySelector("#exit-replay-btn").addEventListener("click", () => this.stopReplay());
+    this.root.querySelector("#play-challenge-btn").addEventListener("click", () => this.openChallengeFromCode(this.shareCodeInput.value));
+    this.root.querySelector("#watch-shared-replay-btn").addEventListener("click", () => this.openReplayFromCode(this.shareCodeInput.value));
+    this.root.querySelector("#load-daily-btn").addEventListener("click", () => this.loadDailyChallenge());
     this.root.querySelector("#settings-btn").addEventListener("click", () => this.toggleSettings());
     this.pauseButton.addEventListener("click", () => this.togglePause());
     this.root.querySelector("#close-settings-btn").addEventListener("click", () => this.toggleSettings(false));
@@ -712,6 +740,134 @@ export class RussianBlockApp {
       this.statusMessage = error instanceof Error ? error.message : "上传回放失败。";
     }
     this.updateUiState();
+  }
+
+  async createChallengeFromLastRun() {
+    if (!this.lastReplay || !this.lastRunSummary) {
+      this.statusMessage = "先完成一局，才能生成挑战。";
+      this.updateUiState();
+      return;
+    }
+    if (!this.apiClient.configured) {
+      this.statusMessage = "请先在设置里配置 API Base。";
+      this.updateUiState();
+      return;
+    }
+
+    try {
+      const replayResponse = await this.apiClient.uploadReplay(this.lastReplay);
+      const challengeResponse = await this.apiClient.createChallenge({
+        kind: "score_chase",
+        mode: this.lastReplay.mode,
+        seed: this.lastReplay.seed,
+        replayCode: replayResponse.code,
+        goal: {
+          score: this.lastRunSummary.score,
+          lines: this.lastRunSummary.lines,
+          durationMs: this.lastRunSummary.durationMs,
+        },
+        title: `${this.lastRunSummary.label} 挑战`,
+      });
+      const url =
+        challengeResponse.url ??
+        `${window.location.origin}${window.location.pathname}?play=challenge&code=${challengeResponse.code}`;
+      await navigator.clipboard?.writeText(url).catch(() => {});
+      this.statusMessage = `挑战已生成，链接已尝试复制。code: ${challengeResponse.code}`;
+    } catch (error) {
+      this.statusMessage = error instanceof Error ? error.message : "生成挑战失败。";
+    }
+    this.updateUiState();
+  }
+
+  async openChallengeFromCode(code) {
+    const normalizedCode = String(code ?? "").trim();
+    if (!normalizedCode) {
+      this.statusMessage = "先输入挑战码。";
+      this.updateUiState();
+      return;
+    }
+    if (!this.apiClient.configured) {
+      this.statusMessage = "当前没有配置分享 API。";
+      this.updateUiState();
+      return;
+    }
+
+    try {
+      const challenge = await this.apiClient.getChallenge(normalizedCode);
+      this.shareCodeInput.value = normalizedCode;
+      this.statusMessage = `已载入挑战 ${normalizedCode}。`;
+      this.startGame({
+        gameMode: sanitizeGameMode(challenge.mode ?? "seed_challenge"),
+        seed: challenge.seed,
+      });
+    } catch (error) {
+      this.statusMessage = error instanceof Error ? error.message : "载入挑战失败。";
+      this.updateUiState();
+    }
+  }
+
+  async openReplayFromCode(code) {
+    const normalizedCode = String(code ?? "").trim();
+    if (!normalizedCode) {
+      this.statusMessage = "先输入回放码。";
+      this.updateUiState();
+      return;
+    }
+    if (!this.apiClient.configured) {
+      this.statusMessage = "当前没有配置分享 API。";
+      this.updateUiState();
+      return;
+    }
+
+    try {
+      const response = await this.apiClient.getReplay(normalizedCode);
+      const replay = response.replay ?? response;
+      this.lastReplay = replay;
+      this.shareCodeInput.value = normalizedCode;
+      this.startReplay(replay, {
+        title: `分享回放 ${normalizedCode}`,
+        subtitle: `${getModeDefinition(replay.mode).label} · Seed ${replay.seed}`,
+      });
+    } catch (error) {
+      this.statusMessage = error instanceof Error ? error.message : "载入回放失败。";
+      this.updateUiState();
+    }
+  }
+
+  async loadDailyChallenge() {
+    if (!this.apiClient.configured) {
+      this.statusMessage = "当前没有配置分享 API。";
+      this.updateUiState();
+      return;
+    }
+
+    try {
+      const date = new Date().toISOString().slice(0, 10);
+      const response = await this.apiClient.getDaily(date);
+      const daily = response.challenge ?? response;
+      this.statusMessage = `今日挑战 ${date} 已就绪。`;
+      this.startGame({
+        gameMode: sanitizeGameMode(daily.mode ?? "seed_challenge"),
+        seed: daily.seed,
+      });
+    } catch (error) {
+      this.statusMessage = error instanceof Error ? error.message : "载入今日挑战失败。";
+      this.updateUiState();
+    }
+  }
+
+  async bootstrapSharedRoute() {
+    const code = this.query.get("code") ?? "";
+    const playMode = this.query.get("play");
+    const watchMode = this.query.get("watch");
+    if (playMode === "challenge" && code) {
+      await this.openChallengeFromCode(code);
+    } else if (watchMode === "replay" && code) {
+      await this.openReplayFromCode(code);
+    } else if (playMode === "puzzle" && code) {
+      this.statusMessage = `残局路由 ${code} 已预留，等待后续题面系统接入。`;
+      this.updateUiState();
+    }
   }
 
   renderHistory() {

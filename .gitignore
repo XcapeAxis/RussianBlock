@@ -4,3 +4,4 @@ output/
 playwright-report/
 *.log
 *.tsbuildinfo
+.wrangler/

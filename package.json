@@ -7,7 +7,10 @@
     "dev": "node scripts/dev-server.mjs",
     "build": "node scripts/build.mjs",
     "preview": "node scripts/preview-server.mjs",
-    "test:game": "node scripts/test-game.mjs"
+    "test:game": "node scripts/test-game.mjs",
+    "worker:dev": "npx wrangler dev",
+    "worker:deploy": "npx wrangler deploy",
+    "worker:d1:migrate": "npx wrangler d1 execute russian-block --file workers/schema.sql"
   },
   "devDependencies": {
     "playwright": "^1.58.2"
