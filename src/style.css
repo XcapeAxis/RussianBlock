@@ -499,6 +499,64 @@ input {
   display: none;
 }
 
+.watch-panel {
+  position: absolute;
+  left: 18px;
+  right: 18px;
+  bottom: 104px;
+  padding: 18px;
+  border-radius: 22px;
+  background: color-mix(in srgb, var(--panel) 95%, transparent);
+  border: 1px solid color-mix(in srgb, var(--panel-border) 88%, transparent);
+  box-shadow: var(--shadow);
+  z-index: 6;
+}
+
+.watch-panel--hidden {
+  display: none;
+}
+
+.watch-panel strong {
+  display: block;
+  font-size: 18px;
+  color: var(--text);
+}
+
+.watch-panel p {
+  margin: 8px 0 0;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.watch-panel-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+  margin-top: 14px;
+}
+
+.watch-panel-chip {
+  padding: 12px 14px;
+  border-radius: 16px;
+  background: color-mix(in srgb, var(--chip) 90%, transparent);
+  border: 1px solid color-mix(in srgb, var(--panel-border) 82%, transparent);
+}
+
+.watch-panel-chip strong {
+  font-size: 16px;
+}
+
+.watch-panel-chip span {
+  display: block;
+  margin-top: 4px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.watch-panel-actions {
+  margin-top: 14px;
+}
+
 .settings-api {
   margin-top: 14px;
 }
@@ -654,6 +712,12 @@ input {
     bottom: 10px;
     flex-direction: column;
     align-items: stretch;
+  }
+
+  .watch-panel {
+    left: 10px;
+    right: 10px;
+    bottom: 124px;
   }
 }
 

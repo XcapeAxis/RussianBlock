@@ -54,6 +54,7 @@ async function readRequestBody(request) {
 async function startMockApiServer(appBaseUrl) {
   const state = {
     replayUploads: [],
+    replayMap: {},
     challengeSubmissions: [],
     dailySubmissions: [],
   };
@@ -76,9 +77,23 @@ async function startMockApiServer(appBaseUrl) {
       const body = await readRequestBody(request);
       const code = `R${state.replayUploads.length + 1}`;
       state.replayUploads.push(body.replay ?? null);
+      state.replayMap[code] = body.replay ?? null;
       sendJson(response, 200, {
         code,
         url: `${appBaseUrl}?watch=replay&code=${code}`,
+      });
+      return;
+    }
+
+    if (request.method === "GET" && segments[0] === "api" && segments[1] === "replays" && segments.length === 3) {
+      const replay = state.replayMap[segments[2]];
+      if (!replay) {
+        sendJson(response, 404, { error: "Replay not found" });
+        return;
+      }
+      sendJson(response, 200, {
+        code: segments[2],
+        replay,
       });
       return;
     }
@@ -691,6 +706,28 @@ async function runSharingFlowLoop(baseUrl, playwright) {
     const downloadPath = await download.path();
     assert(download.suggestedFilename().endsWith(".png"), "Share card export should download a PNG file");
     assert(Boolean(downloadPath), "Share card export should produce a downloadable file");
+
+    await page.goto(`${baseUrl}?watch=replay&code=R1`, { waitUntil: "networkidle" });
+    await page.waitForFunction(() => {
+      const panel = document.querySelector("#watch-panel");
+      return Boolean(panel && !panel.classList.contains("watch-panel--hidden"));
+    });
+    await page.waitForFunction(() => {
+      const title = document.querySelector("#watch-panel-title");
+      const list = document.querySelector("#watch-panel-grid");
+      return Boolean(title && list && /R1/.test(title.textContent ?? "") && /120000|02:00/.test(list.textContent ?? ""));
+    });
+    await page.screenshot({ path: path.join(screenshotDir, "sharing-watch.png"), fullPage: false });
+    await page.locator("#watch-seed-btn").click();
+    await page.waitForFunction(() => {
+      const state = JSON.parse(window.render_game_to_text());
+      const panel = document.querySelector("#watch-panel");
+      return (
+        state.mode === "playing" &&
+        state.seed === "shared-ultra-seed" &&
+        Boolean(panel && panel.classList.contains("watch-panel--hidden"))
+      );
+    });
 
     await page.goto(`${baseUrl}?menu=1`, { waitUntil: "networkidle" });
     await page.locator("#load-daily-btn").click();

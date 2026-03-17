@@ -187,6 +187,7 @@ export class RussianBlockApp {
     this.replayPlayer = null;
     this.liveEngine = null;
     this.replayMeta = null;
+    this.watchSession = null;
     this.selectedGameMode = sanitizeGameMode(this.settings.lastMode);
     this.selectedSeed = this.settings.lastSeed;
     this.statusMessage = "";
@@ -425,6 +426,25 @@ export class RussianBlockApp {
     this.shareCardButton.id = "share-card-btn";
     this.shareCardButton.textContent = "分享成绩卡";
     this.root.querySelector("#share-run-btn").insertAdjacentElement("afterend", this.shareCardButton);
+    this.watchPanel = document.createElement("section");
+    this.watchPanel.id = "watch-panel";
+    this.watchPanel.className = "watch-panel watch-panel--hidden";
+    this.watchPanel.innerHTML = `
+      <span class="eyebrow">Replay Watch</span>
+      <strong id="watch-panel-title">Shared Replay</strong>
+      <p id="watch-panel-copy"></p>
+      <div class="watch-panel-grid" id="watch-panel-grid"></div>
+      <div class="overlay-actions watch-panel-actions">
+        <button type="button" class="primary-btn" id="watch-seed-btn">玩同一题</button>
+        <button type="button" class="secondary-btn" id="watch-menu-btn">回到菜单</button>
+      </div>
+    `;
+    this.replayBanner.insertAdjacentElement("afterend", this.watchPanel);
+    this.watchPanelTitle = this.watchPanel.querySelector("#watch-panel-title");
+    this.watchPanelCopy = this.watchPanel.querySelector("#watch-panel-copy");
+    this.watchPanelGrid = this.watchPanel.querySelector("#watch-panel-grid");
+    this.watchSeedButton = this.watchPanel.querySelector("#watch-seed-btn");
+    this.watchMenuButton = this.watchPanel.querySelector("#watch-menu-btn");
     this.resultLeaderboard = document.createElement("section");
     this.resultLeaderboard.id = "result-leaderboard";
     this.resultLeaderboard.className = "leaderboard-panel leaderboard-panel--hidden";
@@ -464,6 +484,11 @@ export class RussianBlockApp {
     this.root.querySelector("#challenge-run-btn").addEventListener("click", () => this.createChallengeFromLastRun());
     this.root.querySelector("#replay-restart-btn").addEventListener("click", () => this.restartReplay());
     this.root.querySelector("#exit-replay-btn").addEventListener("click", () => this.stopReplay());
+    this.watchSeedButton.addEventListener("click", () => this.startGameFromWatchedReplay());
+    this.watchMenuButton.addEventListener("click", () => {
+      this.stopReplay();
+      this.returnToMenu();
+    });
     this.root.querySelector("#play-challenge-btn").addEventListener("click", () => this.openChallengeFromCode(this.shareCodeInput.value));
     this.root.querySelector("#watch-shared-replay-btn").addEventListener("click", () => this.openReplayFromCode(this.shareCodeInput.value));
     this.root.querySelector("#load-daily-btn").addEventListener("click", () => this.loadDailyChallenge());
@@ -600,6 +625,15 @@ export class RussianBlockApp {
       lines: runSummary.lines,
       durationMs: runSummary.durationMs,
     };
+  }
+
+  setWatchSession(session) {
+    this.watchSession = session
+      ? {
+          ...session,
+          replay: session.replay,
+        }
+      : null;
   }
 
   getBoardKeyFromContext(context) {
@@ -787,7 +821,10 @@ export class RussianBlockApp {
     });
   }
 
-  startReplay(replay, { startAtMs = 0, title = "本局回放", subtitle = "正在播放本地回放。" } = {}) {
+  startReplay(
+    replay,
+    { startAtMs = 0, title = "本局回放", subtitle = "正在播放本地回放。", watchSession = null } = {}
+  ) {
     if (!replay || this.replayPlayer) {
       return;
     }
@@ -798,6 +835,7 @@ export class RussianBlockApp {
     this.liveEngine = this.engine;
     this.replayPlayer = new ReplayPlayer(replay, { startAtMs });
     this.engine = this.replayPlayer.engine;
+    this.setWatchSession(watchSession);
     this.replayMeta = { replay, startAtMs, title, subtitle };
     this.replayTitle.textContent = title;
     this.replayCopy.textContent = subtitle;
@@ -814,9 +852,27 @@ export class RussianBlockApp {
     this.liveEngine = null;
     this.replayPlayer = null;
     this.replayMeta = null;
+    this.setWatchSession(null);
     this.statusMessage = "";
     this.updateUiState();
     this.render();
+  }
+
+  startGameFromWatchedReplay() {
+    const watchSession = this.watchSession;
+    if (!watchSession?.replay) {
+      return;
+    }
+    const replay = watchSession.replay;
+    if (this.replayPlayer) {
+      this.stopReplay();
+    }
+    this.startGame({
+      gameMode: sanitizeGameMode(replay.mode),
+      seed: replay.seed,
+    });
+    this.statusMessage = `已切换到 ${getModeDefinition(replay.mode).label} 同种子对局。`;
+    this.updateUiState();
   }
 
   restartReplay() {
@@ -1196,10 +1252,16 @@ export class RussianBlockApp {
       const replay = response.replay ?? response;
       this.lastReplay = replay;
       this.shareCodeInput.value = normalizedCode;
+      this.statusMessage = `已载入回放 ${normalizedCode}。`;
       this.startReplay(replay, {
         title: `分享回放 ${normalizedCode}`,
         subtitle: `${getModeDefinition(replay.mode).label} · Seed ${replay.seed}`,
+        watchSession: {
+          code: normalizedCode,
+          replay,
+        },
       });
+      this.updateUiState();
     } catch (error) {
       this.statusMessage = error instanceof Error ? error.message : "载入回放失败。";
       this.updateUiState();
@@ -1936,8 +1998,25 @@ export class RussianBlockApp {
     );
     this.pauseButton.hidden = this.engine.mode !== "playing" || Boolean(this.replayPlayer);
     this.replayBanner.classList.toggle("replay-banner--hidden", !this.replayPlayer);
+    this.watchPanel.classList.toggle("watch-panel--hidden", !(this.replayPlayer && this.watchSession));
     this.updateModeUi();
     this.renderHistory();
+
+    if (this.replayPlayer && this.watchSession?.replay) {
+      const watchedReplay = this.watchSession.replay;
+      this.watchPanelTitle.textContent = `回放码 ${this.watchSession.code}`;
+      this.watchPanelCopy.textContent = `${getModeDefinition(watchedReplay.mode).label} · Seed ${watchedReplay.seed}`;
+      this.watchPanelGrid.innerHTML = `
+        <div class="watch-panel-chip"><strong>${formatScore(watchedReplay.result?.score ?? 0)}</strong><span>分数</span></div>
+        <div class="watch-panel-chip"><strong>${watchedReplay.result?.lines ?? 0}</strong><span>消行</span></div>
+        <div class="watch-panel-chip"><strong>${formatDuration(watchedReplay.durationMs ?? 0)}</strong><span>时长</span></div>
+        <div class="watch-panel-chip"><strong>${safeText(getTheme(watchedReplay.themeId).name)}</strong><span>主题</span></div>
+      `;
+    } else {
+      this.watchPanelTitle.textContent = "Shared Replay";
+      this.watchPanelCopy.textContent = "";
+      this.watchPanelGrid.innerHTML = "";
+    }
 
     const latestRun = this.lastRunSummary ?? this.profile.runs[0] ?? null;
     const latestSubmission =
