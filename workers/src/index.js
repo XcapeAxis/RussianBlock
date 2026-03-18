@@ -168,6 +168,12 @@ async function handleGetDaily(env, date) {
     const config = {
       mode: "seed_challenge",
       seed: generatedSeed,
+      title: `Daily Challenge ${date}`,
+      goal: {
+        score: 2500,
+        lines: 18,
+        durationMs: 120000,
+      },
     };
     await env.DB.prepare(
       "INSERT INTO daily_challenges (challenge_date, created_at, mode, seed, config_json) VALUES (?, ?, ?, ?, ?)"

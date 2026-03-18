@@ -176,6 +176,12 @@ async function startMockApiServer(appBaseUrl) {
         challenge: {
           mode: "ultra",
           seed: `daily-ultra-${segments[2]}`,
+          title: `Daily Challenge ${segments[2]}`,
+          goal: {
+            score: 2000,
+            lines: 10,
+            durationMs: 120000,
+          },
         },
       });
       return;

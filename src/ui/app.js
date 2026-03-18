@@ -1639,6 +1639,7 @@ export class RussianBlockApp {
         remoteContext: {
           type: "daily",
           date,
+          goal: daily.goal ?? null,
           title: `今日挑战 ${date}`,
         },
       });
