@@ -40,6 +40,10 @@ function formatTimer(durationMs) {
   return formatDuration(durationMs);
 }
 
+function formatReplayClock(currentMs, durationMs) {
+  return `${formatDuration(currentMs)} / ${formatDuration(durationMs)}`;
+}
+
 function getLocalDateString(date = new Date()) {
   const year = date.getFullYear();
   const month = String(date.getMonth() + 1).padStart(2, "0");
@@ -198,9 +202,77 @@ const HARD_DROP_MIN_VELOCITY = 2.25;
 const HARD_DROP_VERTICAL_DOMINANCE = 2.2;
 const HARD_DROP_MAX_DURATION_MS = 240;
 const HARD_DROP_MAX_LATERAL_DRIFT_RATIO = 0.45;
+const SPECTATE_SPEED_OPTIONS = [0.5, 1, 2, 4];
+const SPECTATE_MARKER_LABELS = {
+  start: "Start",
+  "line-clear": "Line Clear",
+  tspin: "T-Spin",
+  completed: "Completed",
+  gameover: "Game Over",
+};
 
 function distanceBetweenPoints(a, b) {
   return Math.hypot(a.x - b.x, a.y - b.y);
+}
+
+function formatSpectateMarkerLabel(reason) {
+  return SPECTATE_MARKER_LABELS[reason] ?? "Marker";
+}
+
+function buildSpectateSpeedMarkup() {
+  return SPECTATE_SPEED_OPTIONS.map(
+    (speed) => `
+      <button type="button" class="spectate-speed-btn" data-spectate-speed="${speed}" aria-pressed="false">
+        ${speed}x
+      </button>
+    `
+  ).join("");
+}
+
+function collectSpectateMarkers(replay) {
+  const allMarkers = Array.isArray(replay?.markers) ? replay.markers : [];
+  const seen = new Set();
+  const markers = [];
+
+  for (const marker of allMarkers) {
+    const reason = marker?.reason;
+    if (!Object.hasOwn(SPECTATE_MARKER_LABELS, reason)) {
+      continue;
+    }
+    const at = Math.max(0, Number(marker.at) || 0);
+    const key = `${at}:${reason}`;
+    if (seen.has(key)) {
+      continue;
+    }
+    seen.add(key);
+    markers.push({ at, reason });
+  }
+
+  if (markers.length === 0) {
+    return [{ at: 0, reason: "start" }];
+  }
+
+  if (!markers.some((marker) => marker.reason === "start")) {
+    markers.unshift({ at: 0, reason: "start" });
+  }
+
+  if (markers.length <= 8) {
+    return markers;
+  }
+
+  return [markers[0], ...markers.slice(-7)];
+}
+
+function findActiveSpectateMarker(markers, currentTimeMs) {
+  let active = markers[0] ?? null;
+  for (const marker of markers) {
+    if (marker.at <= currentTimeMs) {
+      active = marker;
+    } else {
+      break;
+    }
+  }
+  return active;
 }
 
 export class RussianBlockApp {
@@ -225,7 +297,9 @@ export class RussianBlockApp {
     this.replayPlayer = null;
     this.liveEngine = null;
     this.replayMeta = null;
-    this.watchSession = null;
+    this.spectateSession = null;
+    this.spectateMarker = null;
+    this.spectateMarkersSignature = "";
     this.selectedGameMode = sanitizeGameMode(this.settings.lastMode);
     this.selectedSeed = this.settings.lastSeed;
     this.statusMessage = "";
@@ -379,13 +453,19 @@ export class RussianBlockApp {
             </div>
           </div>
           <div class="replay-banner replay-banner--hidden" id="replay-banner">
-            <div>
-              <strong id="replay-title">回放中</strong>
-              <p id="replay-copy">正在播放最近一局。</p>
+            <div class="replay-banner-copy">
+              <span class="eyebrow" id="replay-eyebrow">Spectate</span>
+              <strong id="replay-title">Replay Player</strong>
+              <p id="replay-copy">Pause, scrub, and jump between key markers.</p>
             </div>
-            <div class="overlay-actions">
-              <button type="button" class="secondary-btn menu-mini-btn" id="replay-restart-btn">重播</button>
-              <button type="button" class="secondary-btn menu-mini-btn" id="exit-replay-btn">退出回放</button>
+            <div class="replay-banner-meta">
+              <strong id="replay-clock">00:00 / 00:00</strong>
+              <span id="replay-marker-copy">Marker: Start</span>
+            </div>
+            <div class="overlay-actions replay-banner-actions">
+              <button type="button" class="secondary-btn menu-mini-btn" id="replay-toggle-btn">Pause</button>
+              <button type="button" class="secondary-btn menu-mini-btn" id="replay-restart-btn">Restart</button>
+              <button type="button" class="secondary-btn menu-mini-btn" id="exit-replay-btn">Exit</button>
             </div>
           </div>
           <aside class="settings-panel settings-panel--hidden" id="settings-panel">
@@ -435,6 +515,7 @@ export class RussianBlockApp {
     this.canvas = this.root.querySelector("#game-canvas");
     this.ctx = this.canvas.getContext("2d");
     this.stage = this.root.querySelector("#stage");
+    this.topActions = this.root.querySelector(".top-actions");
     this.menuOverlay = this.root.querySelector("#menu-overlay");
     this.pauseOverlay = this.root.querySelector("#pause-overlay");
     this.gameOverOverlay = this.root.querySelector("#gameover-overlay");
@@ -461,8 +542,12 @@ export class RussianBlockApp {
     this.historyList = this.root.querySelector("#history-list");
     this.statusCopy = this.root.querySelector("#status-copy");
     this.replayBanner = this.root.querySelector("#replay-banner");
+    this.replayEyebrow = this.root.querySelector("#replay-eyebrow");
     this.replayTitle = this.root.querySelector("#replay-title");
     this.replayCopy = this.root.querySelector("#replay-copy");
+    this.replayClock = this.root.querySelector("#replay-clock");
+    this.replayMarkerCopy = this.root.querySelector("#replay-marker-copy");
+    this.replayToggleButton = this.root.querySelector("#replay-toggle-btn");
     this.shareCardButton = document.createElement("button");
     this.shareCardButton.type = "button";
     this.shareCardButton.className = "secondary-btn";
@@ -479,10 +564,30 @@ export class RussianBlockApp {
     this.watchPanel.id = "watch-panel";
     this.watchPanel.className = "watch-panel watch-panel--hidden";
     this.watchPanel.innerHTML = `
-      <span class="eyebrow">Replay Watch</span>
-      <strong id="watch-panel-title">Shared Replay</strong>
-      <p id="watch-panel-copy"></p>
+      <span class="eyebrow">Spectate Controls</span>
+      <strong id="watch-panel-title">Replay Player</strong>
+      <p id="watch-panel-copy">Scrub the run, jump to markers, or spin up the same seed again.</p>
       <div class="watch-panel-grid" id="watch-panel-grid"></div>
+      <div class="spectate-timeline">
+        <div class="spectate-timeline-head">
+          <span id="spectate-current-time">00:00</span>
+          <span id="spectate-total-time">00:00</span>
+        </div>
+        <input
+          type="range"
+          class="spectate-progress"
+          id="spectate-progress"
+          min="0"
+          max="1"
+          step="100"
+          value="0"
+          aria-label="Replay timeline"
+        />
+      </div>
+      <div class="spectate-speed-group" id="spectate-speed-group">
+        ${buildSpectateSpeedMarkup()}
+      </div>
+      <div class="spectate-marker-list" id="spectate-marker-list"></div>
       <div class="overlay-actions watch-panel-actions">
         <button type="button" class="secondary-btn" id="watch-copy-btn">Copy Link</button>
         <button type="button" class="secondary-btn" id="watch-share-card-btn">Share Card</button>
@@ -495,11 +600,16 @@ export class RussianBlockApp {
     this.watchPanelTitle = this.watchPanel.querySelector("#watch-panel-title");
     this.watchPanelCopy = this.watchPanel.querySelector("#watch-panel-copy");
     this.watchPanelGrid = this.watchPanel.querySelector("#watch-panel-grid");
+    this.spectateCurrentTime = this.watchPanel.querySelector("#spectate-current-time");
+    this.spectateTotalTime = this.watchPanel.querySelector("#spectate-total-time");
+    this.spectateProgress = this.watchPanel.querySelector("#spectate-progress");
+    this.spectateMarkerList = this.watchPanel.querySelector("#spectate-marker-list");
     this.watchCopyButton = this.watchPanel.querySelector("#watch-copy-btn");
     this.watchShareCardButton = this.watchPanel.querySelector("#watch-share-card-btn");
     this.watchChallengeButton = this.watchPanel.querySelector("#watch-challenge-btn");
     this.watchSeedButton = this.watchPanel.querySelector("#watch-seed-btn");
     this.watchMenuButton = this.watchPanel.querySelector("#watch-menu-btn");
+    this.spectateSpeedButtons = Array.from(this.watchPanel.querySelectorAll("[data-spectate-speed]"));
     this.remoteSessionPanel = document.createElement("section");
     this.remoteSessionPanel.id = "remote-session-panel";
     this.remoteSessionPanel.className = "remote-session-panel remote-session-panel--hidden";
@@ -549,15 +659,24 @@ export class RussianBlockApp {
     this.shareCardButton.addEventListener("click", () => void this.shareResultCard());
     this.viewReplayPageButton.addEventListener("click", () => void this.openSharedReplayPageForReplay(this.lastReplay));
     this.root.querySelector("#challenge-run-btn").addEventListener("click", () => this.createChallengeFromLastRun());
+    this.replayToggleButton.addEventListener("click", () => this.toggleSpectatePlayback());
     this.root.querySelector("#replay-restart-btn").addEventListener("click", () => this.restartReplay());
     this.root.querySelector("#exit-replay-btn").addEventListener("click", () => this.stopReplay());
-    this.watchCopyButton.addEventListener("click", () => void this.copyWatchedReplayLink());
-    this.watchShareCardButton.addEventListener("click", () => void this.shareWatchedReplayCard());
-    this.watchChallengeButton.addEventListener("click", () => void this.createChallengeFromWatchedReplay());
-    this.watchSeedButton.addEventListener("click", () => this.startGameFromWatchedReplay());
+    this.watchCopyButton.addEventListener("click", () => void this.copySpectateReplayLink());
+    this.watchShareCardButton.addEventListener("click", () => void this.shareSpectateReplayCard());
+    this.watchChallengeButton.addEventListener("click", () => void this.createChallengeFromSpectateReplay());
+    this.watchSeedButton.addEventListener("click", () => this.startGameFromSpectateReplay());
     this.watchMenuButton.addEventListener("click", () => {
       this.stopReplay();
       this.returnToMenu();
+    });
+    this.spectateProgress.addEventListener("input", () => {
+      this.seekSpectate(Number(this.spectateProgress.value), { keepPlaying: false });
+    });
+    this.spectateSpeedButtons.forEach((button) => {
+      button.addEventListener("click", () => {
+        this.setSpectateSpeed(Number(button.dataset.spectateSpeed));
+      });
     });
     this.root.querySelector("#play-challenge-btn").addEventListener("click", () => this.openChallengeFromCode(this.shareCodeInput.value));
     this.root.querySelector("#watch-shared-replay-btn").addEventListener("click", () => this.openReplayFromCode(this.shareCodeInput.value));
@@ -718,6 +837,11 @@ export class RussianBlockApp {
       url: share.url ?? this.buildReplayShareUrl(share.code),
       summary: share.summary ?? null,
     };
+    if (this.spectateSession?.replay && replayIdentityEquals(replay, this.spectateSession.replay)) {
+      this.spectateSession.code = this.lastReplayShare.code;
+      this.spectateSession.shareUrl = this.lastReplayShare.url;
+      this.spectateSession.summary = this.lastReplayShare.summary;
+    }
     return this.lastReplayShare;
   }
 
@@ -860,13 +984,132 @@ export class RussianBlockApp {
     };
   }
 
-  setWatchSession(session) {
-    this.watchSession = session
+  setSpectateSession(session) {
+    this.spectateSession = session
       ? {
-          ...session,
+          source: session.source ?? "local",
           replay: session.replay,
+          code: session.code ?? "",
+          shareUrl: session.shareUrl ?? "",
+          summary: session.summary ?? null,
+          currentTimeMs: Number(session.currentTimeMs) || 0,
+          durationMs: Number(session.durationMs ?? session.replay?.durationMs) || 0,
+          speed: SPECTATE_SPEED_OPTIONS.includes(Number(session.speed)) ? Number(session.speed) : 1,
+          isPlaying: session.isPlaying !== false,
         }
       : null;
+    this.watchSession = this.spectateSession;
+    this.spectateMarker = null;
+    this.syncSpectateSession();
+  }
+
+  getSpectateReplay() {
+    return this.spectateSession?.replay ?? this.replayMeta?.replay ?? null;
+  }
+
+  getSpectateRunSummary() {
+    return this.buildRunSummaryFromReplay(this.getSpectateReplay());
+  }
+
+  getSpectateMarkers() {
+    return collectSpectateMarkers(this.getSpectateReplay());
+  }
+
+  syncSpectateSession() {
+    if (!this.replayPlayer || !this.spectateSession) {
+      this.spectateMarker = null;
+      return;
+    }
+
+    const durationMs = Number(this.spectateSession.replay?.durationMs ?? 0) || 0;
+    const currentTimeMs = clamp(Number(this.replayPlayer.elapsedMs) || 0, 0, durationMs);
+    this.spectateSession.currentTimeMs = currentTimeMs;
+    this.spectateSession.durationMs = durationMs;
+    this.spectateSession.isPlaying = this.spectateSession.isPlaying && !this.replayPlayer.finished;
+    const markers = this.getSpectateMarkers();
+    this.spectateMarker = findActiveSpectateMarker(markers, currentTimeMs);
+  }
+
+  setSpectateSpeed(speed) {
+    if (!this.spectateSession || !SPECTATE_SPEED_OPTIONS.includes(speed)) {
+      return;
+    }
+
+    this.spectateSession.speed = speed;
+    this.updateUiState();
+  }
+
+  toggleSpectatePlayback() {
+    if (!this.replayPlayer || !this.spectateSession) {
+      return;
+    }
+
+    if (!this.spectateSession.isPlaying && this.replayPlayer.finished) {
+      this.replayPlayer.seek(0);
+      this.replayPlayer.finished = false;
+    }
+
+    this.spectateSession.isPlaying = !this.spectateSession.isPlaying;
+    this.syncSpectateSession();
+    this.updateUiState();
+    this.render();
+  }
+
+  seekSpectate(targetMs, { keepPlaying } = {}) {
+    if (!this.replayPlayer || !this.spectateSession) {
+      return;
+    }
+
+    const durationMs = Number(this.spectateSession.durationMs ?? this.spectateSession.replay?.durationMs) || 0;
+    this.replayPlayer.seek(clamp(Number(targetMs) || 0, 0, durationMs));
+    if (typeof keepPlaying === "boolean") {
+      this.spectateSession.isPlaying = keepPlaying;
+    }
+    this.syncSpectateSession();
+    this.updateUiState();
+    this.render();
+  }
+
+  renderSpectateMarkers() {
+    if (!this.replayPlayer) {
+      this.spectateMarkerList.innerHTML = "";
+      this.spectateMarkersSignature = "";
+      return;
+    }
+
+    const markers = this.getSpectateMarkers();
+    const signature = JSON.stringify({
+      markers,
+      activeMarker: this.spectateMarker,
+    });
+    if (signature === this.spectateMarkersSignature) {
+      return;
+    }
+    this.spectateMarkersSignature = signature;
+    this.spectateMarkerList.innerHTML = markers
+      .map((marker) => {
+        const active =
+          this.spectateMarker &&
+          Number(this.spectateMarker.at) === Number(marker.at) &&
+          this.spectateMarker.reason === marker.reason;
+        return `
+          <button
+            type="button"
+            class="spectate-marker-btn${active ? " spectate-marker-btn--active" : ""}"
+            data-spectate-marker="${marker.at}"
+          >
+            <strong>${formatSpectateMarkerLabel(marker.reason)}</strong>
+            <span>${formatDuration(marker.at)}</span>
+          </button>
+        `;
+      })
+      .join("");
+
+    this.spectateMarkerList.querySelectorAll("[data-spectate-marker]").forEach((button) => {
+      button.addEventListener("click", () => {
+        this.seekSpectate(Number(button.dataset.spectateMarker), { keepPlaying: false });
+      });
+    });
   }
 
   getBoardKeyFromContext(context) {
@@ -1081,10 +1324,27 @@ export class RussianBlockApp {
     this.liveEngine = this.engine;
     this.replayPlayer = new ReplayPlayer(replay, { startAtMs });
     this.engine = this.replayPlayer.engine;
-    this.setWatchSession(watchSession);
-    this.replayMeta = { replay, startAtMs, title, subtitle };
+    this.setSpectateSession({
+      source: watchSession?.source ?? (watchSession?.code ? "remote" : "local"),
+      replay,
+      code: watchSession?.code ?? "",
+      shareUrl: watchSession?.shareUrl ?? "",
+      summary: watchSession?.summary ?? null,
+      currentTimeMs: startAtMs,
+      durationMs: replay.durationMs,
+      speed: watchSession?.speed ?? 1,
+      isPlaying: true,
+    });
+    this.replayMeta = {
+      replay,
+      startAtMs,
+      title,
+      subtitle,
+      spectateSession: watchSession ?? null,
+    };
     this.replayTitle.textContent = title;
     this.replayCopy.textContent = subtitle;
+    this.syncSpectateSession();
     this.updateUiState();
     this.render();
   }
@@ -1098,14 +1358,14 @@ export class RussianBlockApp {
     this.liveEngine = null;
     this.replayPlayer = null;
     this.replayMeta = null;
-    this.setWatchSession(null);
+    this.setSpectateSession(null);
     this.statusMessage = "";
     this.updateUiState();
     this.render();
   }
 
-  startGameFromWatchedReplay() {
-    const watchSession = this.watchSession;
+  startGameFromSpectateReplay() {
+    const watchSession = this.spectateSession;
     if (!watchSession?.replay) {
       return;
     }
@@ -1125,9 +1385,9 @@ export class RussianBlockApp {
     if (!this.replayMeta) {
       return;
     }
-    const { replay, startAtMs, title, subtitle } = this.replayMeta;
+    const { replay, startAtMs, title, subtitle, spectateSession } = this.replayMeta;
     this.stopReplay();
-    this.startReplay(replay, { startAtMs, title, subtitle });
+    this.startReplay(replay, { startAtMs, title, subtitle, watchSession: spectateSession });
   }
 
   replayLastRun() {
@@ -1197,13 +1457,21 @@ export class RussianBlockApp {
     this.updateUiState();
   }
 
-  async copyWatchedReplayLink() {
-    if (!this.watchSession?.replay) {
+  async copySpectateReplayLink() {
+    const replay = this.getSpectateReplay();
+    if (!replay) {
+      return;
+    }
+
+    if (!this.apiClient.configured) {
+      await this.copyTextToClipboard(JSON.stringify(replay));
+      this.statusMessage = "Replay JSON copied to the clipboard.";
+      this.updateUiState();
       return;
     }
 
     try {
-      const response = await this.ensureReplayShare(this.watchSession.replay);
+      const response = await this.ensureReplayShare(replay);
       await this.copyTextToClipboard(response.url ?? response.code ?? "");
       this.statusMessage = `Replay link copied: ${response.code}`;
     } catch (error) {
@@ -1322,9 +1590,8 @@ export class RussianBlockApp {
     this.updateUiState();
   }
 
-  async shareWatchedReplayCard() {
-    const replay = this.watchSession?.replay;
-    const runSummary = this.buildRunSummaryFromReplay(replay);
+  async shareSpectateReplayCard() {
+    const runSummary = this.getSpectateRunSummary();
     if (!runSummary) {
       return;
     }
@@ -1537,11 +1804,12 @@ export class RussianBlockApp {
     this.updateUiState();
   }
 
-  async createChallengeFromWatchedReplay() {
-    if (!this.watchSession?.replay) {
+  async createChallengeFromSpectateReplay() {
+    const replay = this.getSpectateReplay();
+    if (!replay) {
       return null;
     }
-    return this.createChallengeFromReplay(this.watchSession.replay);
+    return this.createChallengeFromReplay(replay);
   }
 
   async openChallengeFromCode(code) {
@@ -1725,9 +1993,18 @@ export class RussianBlockApp {
 
   handleKeyDown(event) {
     if (this.replayPlayer) {
-      if (event.key.toLowerCase() === "escape") {
+      const key = event.key.toLowerCase();
+      if (key === "escape" || key === " " || key === "spacebar" || key === "arrowleft" || key === "arrowright") {
         event.preventDefault();
+      }
+      if (key === "escape") {
         this.stopReplay();
+      } else if (key === " " || key === "spacebar") {
+        this.toggleSpectatePlayback();
+      } else if (key === "arrowleft") {
+        this.seekSpectate((this.spectateSession?.currentTimeMs ?? 0) - 5000, { keepPlaying: false });
+      } else if (key === "arrowright") {
+        this.seekSpectate((this.spectateSession?.currentTimeMs ?? 0) + 5000, { keepPlaying: false });
       }
       return;
     }
@@ -2256,7 +2533,10 @@ export class RussianBlockApp {
 
   advanceTime(deltaMs) {
     if (this.replayPlayer) {
-      this.replayPlayer.update(deltaMs);
+      if (this.spectateSession?.isPlaying !== false) {
+        this.replayPlayer.update(deltaMs * (this.spectateSession?.speed ?? 1));
+      }
+      this.syncSpectateSession();
       this.updateUiState();
       this.render();
       return;
@@ -2345,15 +2625,17 @@ export class RussianBlockApp {
     this.ghostToggle.checked = this.settings.ghostEnabled;
     this.nicknameInput.value = this.settings.nickname ?? "";
     this.apiBaseInput.value = this.settings.apiBase ?? "";
-    this.menuOverlay.classList.toggle("overlay--hidden", this.engine.mode !== "menu");
-    this.pauseOverlay.classList.toggle("overlay--hidden", this.engine.mode !== "paused");
+    const isSpectating = Boolean(this.replayPlayer);
+    this.topActions.hidden = isSpectating;
+    this.menuOverlay.classList.toggle("overlay--hidden", isSpectating || this.engine.mode !== "menu");
+    this.pauseOverlay.classList.toggle("overlay--hidden", isSpectating || this.engine.mode !== "paused");
     this.gameOverOverlay.classList.toggle(
       "overlay--hidden",
-      this.engine.mode !== "gameover" && this.engine.mode !== "completed"
+      isSpectating || (this.engine.mode !== "gameover" && this.engine.mode !== "completed")
     );
     this.pauseButton.hidden = this.engine.mode !== "playing" || Boolean(this.replayPlayer);
-    this.replayBanner.classList.toggle("replay-banner--hidden", !this.replayPlayer);
-    this.watchPanel.classList.toggle("watch-panel--hidden", !(this.replayPlayer && this.watchSession));
+    this.replayBanner.classList.toggle("replay-banner--hidden", !isSpectating);
+    this.watchPanel.classList.toggle("watch-panel--hidden", !isSpectating);
     const sessionContext = !this.replayPlayer && this.activeRemoteSession && this.engine.mode !== "menu"
       ? this.activeRemoteSession
       : null;
@@ -2389,6 +2671,65 @@ export class RussianBlockApp {
       this.watchPanelTitle.textContent = "Shared Replay";
       this.watchPanelCopy.textContent = "";
       this.watchPanelGrid.innerHTML = "";
+    }
+
+    if (isSpectating && this.spectateSession?.replay) {
+      const watchedReplay = this.spectateSession.replay;
+      const currentTimeMs = Number(this.spectateSession.currentTimeMs) || 0;
+      const durationMs = Number(this.spectateSession.durationMs ?? watchedReplay.durationMs) || 0;
+      const shareCode = String(this.spectateSession.code ?? "").trim();
+      this.replayEyebrow.textContent = shareCode ? "Shared Spectate" : "Local Spectate";
+      this.replayClock.textContent = formatReplayClock(currentTimeMs, durationMs);
+      this.replayMarkerCopy.textContent = this.spectateMarker
+        ? `Marker: ${formatSpectateMarkerLabel(this.spectateMarker.reason)} · ${formatDuration(this.spectateMarker.at)}`
+        : "Marker: Start";
+      this.replayToggleButton.textContent = this.spectateSession.isPlaying
+        ? "Pause"
+        : this.replayPlayer.finished
+          ? "Replay"
+          : "Play";
+      this.watchPanelTitle.textContent = shareCode ? `Replay ${shareCode}` : "Replay Player";
+      this.watchPanelCopy.textContent = shareCode
+        ? "Pause, scrub, or challenge the same shared seed."
+        : "Local replays use the same player controls and can still be shared.";
+      this.watchPanelGrid.innerHTML = `
+        <div class="watch-panel-chip"><strong>${safeText(getModeDefinition(watchedReplay.mode).name)}</strong><span>Mode</span></div>
+        <div class="watch-panel-chip"><strong>${formatScore(watchedReplay.result?.score ?? 0)}</strong><span>Score</span></div>
+        <div class="watch-panel-chip"><strong>${watchedReplay.result?.lines ?? 0}</strong><span>Lines</span></div>
+        <div class="watch-panel-chip"><strong>${formatDuration(watchedReplay.durationMs ?? 0)}</strong><span>Duration</span></div>
+        <div class="watch-panel-chip"><strong>${safeText(watchedReplay.seed || "AUTO")}</strong><span>Seed</span></div>
+        <div class="watch-panel-chip"><strong>${safeText(getTheme(watchedReplay.themeId).name)}</strong><span>Theme</span></div>
+      `;
+      this.spectateCurrentTime.textContent = formatDuration(currentTimeMs);
+      this.spectateTotalTime.textContent = formatDuration(durationMs);
+      this.spectateProgress.max = String(Math.max(1, durationMs));
+      this.spectateProgress.value = String(clamp(currentTimeMs, 0, Math.max(1, durationMs)));
+      this.spectateSpeedButtons.forEach((button) => {
+        const active = Number(button.dataset.spectateSpeed) === Number(this.spectateSession.speed ?? 1);
+        button.setAttribute("aria-pressed", String(active));
+      });
+      this.watchCopyButton.textContent = shareCode
+        ? "Copy Link"
+        : this.apiClient.configured
+          ? "Upload & Copy Link"
+          : "Copy Replay JSON";
+      this.renderSpectateMarkers();
+    } else {
+      this.replayEyebrow.textContent = "Spectate";
+      this.replayClock.textContent = "00:00 / 00:00";
+      this.replayMarkerCopy.textContent = "Marker: Start";
+      this.replayToggleButton.textContent = "Pause";
+      this.watchPanelTitle.textContent = "Replay Player";
+      this.watchPanelCopy.textContent = "";
+      this.watchPanelGrid.innerHTML = "";
+      this.spectateCurrentTime.textContent = "00:00";
+      this.spectateTotalTime.textContent = "00:00";
+      this.spectateProgress.max = "1";
+      this.spectateProgress.value = "0";
+      this.spectateSpeedButtons.forEach((button) => {
+        button.setAttribute("aria-pressed", String(Number(button.dataset.spectateSpeed) === 1));
+      });
+      this.renderSpectateMarkers();
     }
 
     const latestRun = this.lastRunSummary ?? this.profile.runs[0] ?? null;

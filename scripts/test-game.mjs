@@ -776,6 +776,12 @@ async function runSharingFlowLoop(baseUrl, playwright) {
 
   try {
     const getState = () => page.evaluate(() => JSON.parse(window.render_game_to_text()));
+    const getSpectateProgress = () => page.locator("#spectate-progress").evaluate((element) => Number(element.value));
+    const setSpectateProgress = (value) =>
+      page.locator("#spectate-progress").evaluate((element, nextValue) => {
+        element.value = String(nextValue);
+        element.dispatchEvent(new Event("input", { bubbles: true }));
+      }, value);
     const expectedLocalDate = (() => {
       const current = new Date();
       const year = current.getFullYear();
@@ -821,6 +827,50 @@ async function runSharingFlowLoop(baseUrl, playwright) {
       }
     );
     await page.screenshot({ path: path.join(screenshotDir, "sharing-challenge-result.png"), fullPage: false });
+    await page.locator("#replay-full-btn").click();
+    await page.waitForFunction(() => {
+      const banner = document.querySelector("#replay-banner");
+      const panel = document.querySelector("#watch-panel");
+      const progress = document.querySelector("#spectate-progress");
+      return Boolean(
+        banner &&
+          panel &&
+          progress &&
+          !banner.classList.contains("replay-banner--hidden") &&
+          !panel.classList.contains("watch-panel--hidden")
+      );
+    });
+    const localProgressBefore = await getSpectateProgress();
+    await page.evaluate(() => window.advanceTime(4000));
+    const localProgressAfter = await getSpectateProgress();
+    assert(localProgressAfter > localProgressBefore, "Local spectate playback should advance while playing");
+    await page.locator("#replay-toggle-btn").click();
+    const pausedProgress = await getSpectateProgress();
+    await page.evaluate(() => window.advanceTime(2000));
+    const pausedProgressAfter = await getSpectateProgress();
+    assert(pausedProgressAfter === pausedProgress, "Paused spectate playback should stay still");
+    await page.locator('[data-spectate-speed="4"]').click();
+    await page.locator("#replay-toggle-btn").click();
+    const fastProgressBefore = await getSpectateProgress();
+    await page.evaluate(() => window.advanceTime(1000));
+    const fastProgressAfter = await getSpectateProgress();
+    assert(fastProgressAfter - fastProgressBefore >= 3500, "4x spectate speed should advance faster than wall time");
+    await page.locator("#replay-toggle-btn").click();
+    const markerCount = await page.locator("[data-spectate-marker]").count();
+    assert(markerCount >= 1, "Spectate mode should render at least one marker button");
+    if (markerCount > 1) {
+      await page.locator("[data-spectate-marker]").last().click();
+      const markerProgress = await getSpectateProgress();
+      assert(markerProgress >= fastProgressAfter, "Marker jumps should seek forward in the replay");
+    }
+    await setSpectateProgress(5000);
+    const scrubbedProgress = await getSpectateProgress();
+    assert(scrubbedProgress >= 5000, "Spectate progress scrubber should seek the replay");
+    await page.locator("#exit-replay-btn").click();
+    await page.waitForFunction(() => {
+      const target = document.querySelector("#gameover-overlay");
+      return Boolean(target && !target.classList.contains("overlay--hidden"));
+    });
     await page.locator("#view-replay-page-btn").click();
     await page.waitForFunction(() => Array.isArray(window.__openedUrls) && window.__openedUrls.some((url) => /watch=replay&code=R1/.test(url)));
     assert(
@@ -844,13 +894,29 @@ async function runSharingFlowLoop(baseUrl, playwright) {
 
     await page.goto(`${baseUrl}?watch=replay&code=R1`, { waitUntil: "networkidle" });
     await page.waitForFunction(() => {
+      const banner = document.querySelector("#replay-banner");
       const panel = document.querySelector("#watch-panel");
-      return Boolean(panel && !panel.classList.contains("watch-panel--hidden"));
+      const progress = document.querySelector("#spectate-progress");
+      return Boolean(
+        banner &&
+          panel &&
+          progress &&
+          !banner.classList.contains("replay-banner--hidden") &&
+          !panel.classList.contains("watch-panel--hidden")
+      );
     });
     await page.waitForFunction(() => {
       const title = document.querySelector("#watch-panel-title");
       const list = document.querySelector("#watch-panel-grid");
-      return Boolean(title && list && /R1/.test(title.textContent ?? "") && /120000|02:00/.test(list.textContent ?? ""));
+      const clock = document.querySelector("#replay-clock");
+      return Boolean(
+        title &&
+          list &&
+          clock &&
+          /R1/.test(title.textContent ?? "") &&
+          /120000|02:00/.test(list.textContent ?? "") &&
+          /02:00/.test(clock.textContent ?? "")
+      );
     });
     await page.locator("#watch-copy-btn").click();
     await page.waitForFunction(() => Array.isArray(window.__clipboardWrites) && window.__clipboardWrites.some((value) => /watch=replay&code=R1/.test(value)));
@@ -866,7 +932,20 @@ async function runSharingFlowLoop(baseUrl, playwright) {
     );
     await page.locator("#watch-share-card-btn").click();
     await page.waitForTimeout(150);
-    await page.screenshot({ path: path.join(screenshotDir, "sharing-watch.png"), fullPage: false });
+    await page.screenshot({ path: path.join(screenshotDir, "spectate-desktop.png"), fullPage: false });
+    await page.setViewportSize({ width: 412, height: 915 });
+    await page.goto(`${baseUrl}?watch=replay&code=R1`, { waitUntil: "networkidle" });
+    await page.waitForFunction(() => {
+      const banner = document.querySelector("#replay-banner");
+      const panel = document.querySelector("#watch-panel");
+      return Boolean(
+        banner &&
+          panel &&
+          !banner.classList.contains("replay-banner--hidden") &&
+          !panel.classList.contains("watch-panel--hidden")
+      );
+    });
+    await page.screenshot({ path: path.join(screenshotDir, "spectate-mobile.png"), fullPage: false });
     await page.locator("#watch-seed-btn").click();
     await page.waitForFunction(() => {
       const state = JSON.parse(window.render_game_to_text());

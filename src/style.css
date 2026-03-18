@@ -84,6 +84,10 @@ input {
   z-index: 4;
 }
 
+.top-actions[hidden] {
+  display: none;
+}
+
 .ui-chip,
 .icon-btn,
 .primary-btn,
@@ -476,11 +480,9 @@ input {
 .replay-banner {
   position: absolute;
   left: 18px;
-  right: 18px;
-  bottom: 18px;
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
+  top: 18px;
+  width: min(520px, calc(100% - 36px));
+  display: grid;
   gap: 14px;
   padding: 16px 18px;
   border-radius: 22px;
@@ -492,6 +494,29 @@ input {
 
 .replay-banner strong {
   display: block;
+}
+
+.replay-banner-copy {
+  display: grid;
+  gap: 4px;
+}
+
+.replay-banner-meta {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.replay-banner-meta strong {
+  font-size: 18px;
+  color: var(--text);
+}
+
+.replay-banner-actions {
+  margin-top: 0;
 }
 
 .replay-banner p {
@@ -506,14 +531,18 @@ input {
 
 .watch-panel {
   position: absolute;
-  left: 18px;
+  top: 156px;
   right: 18px;
-  bottom: 104px;
+  bottom: 18px;
+  width: min(380px, calc(100% - 36px));
+  display: flex;
+  flex-direction: column;
   padding: 18px;
   border-radius: 22px;
   background: color-mix(in srgb, var(--panel) 95%, transparent);
   border: 1px solid color-mix(in srgb, var(--panel-border) 88%, transparent);
   box-shadow: var(--shadow);
+  overflow: auto;
   z-index: 6;
 }
 
@@ -584,6 +613,69 @@ input {
   margin-top: 4px;
   color: var(--muted);
   font-size: 12px;
+}
+
+.spectate-timeline {
+  margin-top: 16px;
+  padding: 14px;
+  border-radius: 18px;
+  background: color-mix(in srgb, var(--chip) 90%, transparent);
+  border: 1px solid color-mix(in srgb, var(--panel-border) 82%, transparent);
+}
+
+.spectate-timeline-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 10px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.spectate-progress {
+  width: 100%;
+  accent-color: var(--accent);
+  touch-action: none;
+}
+
+.spectate-speed-group,
+.spectate-marker-list {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(90px, 1fr));
+  gap: 10px;
+  margin-top: 14px;
+}
+
+.spectate-speed-btn,
+.spectate-marker-btn {
+  padding: 12px 14px;
+  border-radius: 16px;
+  border: 1px solid color-mix(in srgb, var(--panel-border) 82%, transparent);
+  background: color-mix(in srgb, var(--button-alt) 88%, transparent);
+  color: var(--text);
+  text-align: left;
+}
+
+.spectate-speed-btn[aria-pressed="true"],
+.spectate-marker-btn--active {
+  border-color: color-mix(in srgb, var(--accent) 58%, transparent);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent-soft) 24%, transparent);
+}
+
+.spectate-marker-btn strong,
+.spectate-marker-btn span {
+  display: block;
+}
+
+.spectate-marker-btn strong {
+  font-size: 13px;
+}
+
+.spectate-marker-btn span {
+  margin-top: 4px;
+  color: var(--muted);
+  font-size: 11px;
 }
 
 .watch-panel-actions {
@@ -741,16 +833,17 @@ input {
 
   .replay-banner {
     left: 10px;
-    right: 10px;
-    bottom: 10px;
-    flex-direction: column;
-    align-items: stretch;
+    top: 10px;
+    width: calc(100% - 20px);
   }
 
   .watch-panel {
-    left: 10px;
     right: 10px;
-    bottom: 124px;
+    left: 10px;
+    top: auto;
+    bottom: 10px;
+    width: auto;
+    max-height: min(52dvh, 420px);
   }
 
   .remote-session-panel {
