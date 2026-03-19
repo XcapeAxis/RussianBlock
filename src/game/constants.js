@@ -11,3 +11,5 @@ export const MOVE_REPEAT_DELAY = 130;
 export const MOVE_REPEAT_INTERVAL = 42;
 export const SOFT_DROP_INTERVAL = 38;
 export const LOCK_DELAY_MS = 460;
+export const GRAVITY_SHIFT_INTERVAL_MS = 18000;
+export const GRAVITY_SHIFT_WARNING_MS = 1500;

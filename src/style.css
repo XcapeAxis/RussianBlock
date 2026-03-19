@@ -290,6 +290,32 @@ input {
   min-height: 132px;
 }
 
+.ghost-config {
+  margin-top: 14px;
+}
+
+.ghost-config--hidden {
+  display: none;
+}
+
+.ghost-config-grid {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  margin-top: 12px;
+}
+
+.ghost-config-chip {
+  border-radius: 18px;
+  min-height: 74px;
+}
+
+.ghost-code-field {
+  margin-top: 12px;
+}
+
+.ghost-code-field--hidden {
+  display: none;
+}
+
 .seed-field {
   display: block;
   margin-top: 14px;
@@ -354,6 +380,17 @@ input {
   margin-top: 10px;
 }
 
+.history-card {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 10px;
+  align-items: stretch;
+}
+
+.history-card--lab {
+  grid-template-columns: 1fr auto;
+}
+
 .history-row {
   padding: 14px;
   border-radius: 18px;
@@ -366,6 +403,10 @@ input {
 .history-row strong {
   display: block;
   font-size: 14px;
+}
+
+.history-row--static {
+  cursor: default;
 }
 
 .history-row span,
@@ -576,6 +617,38 @@ input {
   margin: 6px 0 0;
   color: var(--muted);
   font-size: 13px;
+}
+
+.ghost-session-panel {
+  position: absolute;
+  left: 18px;
+  right: 18px;
+  top: 86px;
+  padding: 14px 18px;
+  border-radius: 20px;
+  background: color-mix(in srgb, var(--panel) 94%, transparent);
+  border: 1px solid color-mix(in srgb, var(--panel-border) 88%, transparent);
+  box-shadow: var(--shadow);
+  z-index: 6;
+}
+
+.ghost-session-panel--hidden {
+  display: none;
+}
+
+.ghost-session-panel strong {
+  display: block;
+  color: var(--text);
+}
+
+.ghost-session-panel p {
+  margin: 6px 0 0;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.ghost-session-grid {
+  margin-top: 12px;
 }
 
 .watch-panel strong {
@@ -822,6 +895,10 @@ input {
     grid-auto-columns: minmax(188px, 1fr);
   }
 
+  .ghost-config-grid {
+    grid-template-columns: 1fr;
+  }
+
   .settings-panel {
     width: min(86vw, 332px);
   }
@@ -847,6 +924,12 @@ input {
   }
 
   .remote-session-panel {
+    left: 10px;
+    right: 10px;
+    top: 70px;
+  }
+
+  .ghost-session-panel {
     left: 10px;
     right: 10px;
     top: 70px;

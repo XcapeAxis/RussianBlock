@@ -2,8 +2,8 @@ export const GAME_MODES = {
   marathon: {
     id: "marathon",
     name: "Marathon",
-    label: "经典爬分",
-    description: "传统无限模式，越打越快。",
+    label: "Classic Marathon",
+    description: "Classic endless scoring. Survive longer as gravity speeds up.",
     targetLines: null,
     timeLimitMs: null,
     usesSeed: false,
@@ -11,8 +11,8 @@ export const GAME_MODES = {
   sprint: {
     id: "sprint",
     name: "Sprint 40L",
-    label: "40 行竞速",
-    description: "以最短时间消掉 40 行。",
+    label: "Sprint 40 Lines",
+    description: "Clear 40 lines as fast as possible.",
     targetLines: 40,
     timeLimitMs: null,
     usesSeed: false,
@@ -20,8 +20,8 @@ export const GAME_MODES = {
   ultra: {
     id: "ultra",
     name: "Ultra 120s",
-    label: "120 秒冲分",
-    description: "两分钟内尽可能拿高分。",
+    label: "Ultra 120 Seconds",
+    description: "Score as much as possible in two minutes.",
     targetLines: null,
     timeLimitMs: 120000,
     usesSeed: false,
@@ -29,17 +29,26 @@ export const GAME_MODES = {
   seed_challenge: {
     id: "seed_challenge",
     name: "Challenge Seed",
-    label: "固定种子挑战",
-    description: "用同一条随机种子反复挑战。",
+    label: "Fixed Seed Run",
+    description: "Replay the same seed again and again to optimize your route.",
     targetLines: null,
     timeLimitMs: null,
     usesSeed: true,
   },
+  ghost_race: {
+    id: "ghost_race",
+    name: "Ghost Duel",
+    label: "Ghost Duel",
+    description: "Race a replay ghost in Sprint or Ultra with a shared seed.",
+    targetLines: null,
+    timeLimitMs: null,
+    usesSeed: false,
+  },
   puzzle: {
     id: "puzzle",
     name: "Puzzle",
-    label: "残局挑战",
-    description: "保留给后续残局工坊和题面挑战。",
+    label: "Puzzle",
+    description: "Reserved for future handcrafted puzzle challenges.",
     targetLines: null,
     timeLimitMs: null,
     usesSeed: true,
@@ -48,7 +57,7 @@ export const GAME_MODES = {
     id: "boss",
     name: "Boss",
     label: "Boss Mode",
-    description: "保留给实验玩法。",
+    description: "Reserved for future experimental boss encounters.",
     targetLines: null,
     timeLimitMs: null,
     usesSeed: false,
@@ -56,8 +65,8 @@ export const GAME_MODES = {
   gravity_shift: {
     id: "gravity_shift",
     name: "Gravity Shift",
-    label: "重力反转",
-    description: "保留给实验玩法。",
+    label: "Gravity Shift",
+    description: "Experimental survival mode with gravity flips every 18 seconds.",
     targetLines: null,
     timeLimitMs: null,
     usesSeed: false,
@@ -65,8 +74,8 @@ export const GAME_MODES = {
   dual_board: {
     id: "dual_board",
     name: "Dual Board",
-    label: "双棋盘高压",
-    description: "保留给实验玩法。",
+    label: "Dual Board",
+    description: "Reserved for future two-board experiments.",
     targetLines: null,
     timeLimitMs: null,
     usesSeed: false,
@@ -74,15 +83,15 @@ export const GAME_MODES = {
   rhythm: {
     id: "rhythm",
     name: "Rhythm",
-    label: "节奏模式",
-    description: "保留给实验玩法。",
+    label: "Rhythm Mode",
+    description: "Reserved for a music-driven timing mode.",
     targetLines: null,
     timeLimitMs: null,
     usesSeed: false,
   },
 };
 
-export const PLAYABLE_PHASE_ONE_MODES = ["marathon", "sprint", "ultra", "seed_challenge"];
+export const PLAYABLE_PHASE_ONE_MODES = ["marathon", "sprint", "ultra", "seed_challenge", "ghost_race"];
 export const DEFAULT_GAME_MODE = "marathon";
 
 function isKnownMode(modeId) {
@@ -107,16 +116,28 @@ export function normalizeSeed(seed) {
 export function buildGameConfig(partial = {}) {
   const gameMode = sanitizeGameMode(partial.gameMode ?? partial.mode);
   const definition = GAME_MODES[gameMode];
+  const duelMode = sanitizeGameMode(partial.duelMode ?? partial.baseMode ?? "sprint");
+  const duelDefinition = GAME_MODES[duelMode];
   const rawSeed = partial.seed;
+
+  const targetLines = gameMode === "ghost_race" ? duelDefinition.targetLines : definition.targetLines;
+  const timeLimitMs = gameMode === "ghost_race" ? duelDefinition.timeLimitMs : definition.timeLimitMs;
+  const label = gameMode === "ghost_race" ? `${definition.label} · ${duelDefinition.name}` : definition.label;
+  const description =
+    gameMode === "ghost_race"
+      ? `${definition.description} Current ruleset: ${duelDefinition.name}.`
+      : definition.description;
 
   return {
     gameMode,
-    label: definition.label,
-    description: definition.description,
+    label,
+    description,
     usesSeed: definition.usesSeed,
     seed: definition.usesSeed || rawSeed ? normalizeSeed(rawSeed) : createSeed(),
-    targetLines: definition.targetLines,
-    timeLimitMs: definition.timeLimitMs,
+    targetLines,
+    timeLimitMs,
+    duelMode: gameMode === "ghost_race" ? duelMode : null,
+    gravityShiftEnabled: gameMode === "gravity_shift",
   };
 }
 

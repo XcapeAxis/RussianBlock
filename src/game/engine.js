@@ -3,6 +3,8 @@ import {
   BOARD_ROWS,
   BUFFER_ROWS,
   COMBO_STEP_POINTS,
+  GRAVITY_SHIFT_INTERVAL_MS,
+  GRAVITY_SHIFT_WARNING_MS,
   LINE_CLEAR_POINTS,
   LOCK_DELAY_MS,
   PREVIEW_COUNT,
@@ -33,6 +35,10 @@ function getLevelFromLines(lines) {
   return Math.floor(lines / 10) + 1;
 }
 
+function getSpawnYForDirection(direction) {
+  return direction < 0 ? BOARD_ROWS - 4 : 0;
+}
+
 export class TetrisEngine {
   constructor({ bestScore = 0 } = {}) {
     this.bestScore = bestScore;
@@ -60,6 +66,7 @@ export class TetrisEngine {
     this.canHold = true;
     this.gravityAccumulator = 0;
     this.lockAccumulator = 0;
+    this.gravityDirection = 1;
     this.lastRotation = null;
     this.lastClear = {
       cleared: 0,
@@ -91,6 +98,7 @@ export class TetrisEngine {
     this.canHold = true;
     this.gravityAccumulator = 0;
     this.lockAccumulator = 0;
+    this.gravityDirection = 1;
     this.lastRotation = null;
     this.lastClear = {
       cleared: 0,
@@ -125,6 +133,7 @@ export class TetrisEngine {
       return;
     }
 
+    const previousElapsedMs = this.elapsedMs;
     this.elapsedMs += deltaMs;
     if (this.remainingMs !== null) {
       this.remainingMs = Math.max(0, this.sessionConfig.timeLimitMs - this.elapsedMs);
@@ -134,11 +143,13 @@ export class TetrisEngine {
       }
     }
 
+    this.updateGravityDirection(previousElapsedMs);
+
     this.gravityAccumulator += deltaMs;
     const interval = this.getGravityInterval();
     while (this.gravityAccumulator >= interval) {
       this.gravityAccumulator -= interval;
-      if (!this.tryMove(0, 1)) {
+      if (!this.tryMove(0, this.gravityDirection)) {
         break;
       }
     }
@@ -173,7 +184,7 @@ export class TetrisEngine {
     if (this.mode !== "playing" || !this.activePiece) {
       return false;
     }
-    if (this.tryMove(0, 1)) {
+    if (this.tryMove(0, this.gravityDirection)) {
       this.score += 1;
       this.updateBestScore();
       return true;
@@ -186,7 +197,7 @@ export class TetrisEngine {
     if (!this.activePiece) {
       return false;
     }
-    if (this.tryMove(0, 1)) {
+    if (this.tryMove(0, this.gravityDirection)) {
       return true;
     }
     this.lockPiece();
@@ -199,7 +210,7 @@ export class TetrisEngine {
     }
 
     let distance = 0;
-    while (this.tryMove(0, 1)) {
+    while (this.tryMove(0, this.gravityDirection)) {
       distance += 1;
     }
 
@@ -248,6 +259,7 @@ export class TetrisEngine {
       const nextType = this.holdPieceType;
       this.holdPieceType = currentType;
       this.activePiece = createPiece(nextType);
+      this.activePiece.y = getSpawnYForDirection(this.gravityDirection);
       if (this.collides(nextType, this.activePiece.x, this.activePiece.y, this.activePiece.rotation)) {
         this.finishGame("gameover", "top-out");
       }
@@ -285,11 +297,8 @@ export class TetrisEngine {
     return getPieceCells(type, rotation).some(([cellX, cellY]) => {
       const x = pieceX + cellX;
       const y = pieceY + cellY;
-      if (x < 0 || x >= BOARD_COLS || y >= BOARD_ROWS) {
+      if (x < 0 || x >= BOARD_COLS || y < 0 || y >= BOARD_ROWS) {
         return true;
-      }
-      if (y < 0) {
-        return false;
       }
       return this.board[y][x] !== null;
     });
@@ -298,7 +307,12 @@ export class TetrisEngine {
   isGrounded() {
     return (
       Boolean(this.activePiece) &&
-      this.collides(this.activePiece.type, this.activePiece.x, this.activePiece.y + 1, this.activePiece.rotation)
+      this.collides(
+        this.activePiece.type,
+        this.activePiece.x,
+        this.activePiece.y + this.gravityDirection,
+        this.activePiece.rotation
+      )
     );
   }
 
@@ -437,7 +451,11 @@ export class TetrisEngine {
     });
 
     while (remaining.length < BOARD_ROWS) {
-      remaining.unshift(createEmptyRow());
+      if (this.gravityDirection < 0) {
+        remaining.push(createEmptyRow());
+      } else {
+        remaining.unshift(createEmptyRow());
+      }
     }
 
     this.board = remaining;
@@ -451,6 +469,7 @@ export class TetrisEngine {
 
     const nextType = this.queue.shift();
     this.activePiece = createPiece(nextType);
+    this.activePiece.y = getSpawnYForDirection(this.gravityDirection);
     while (this.queue.length < PREVIEW_COUNT) {
       this.queue.push(this.randomBag.next());
     }
@@ -478,10 +497,64 @@ export class TetrisEngine {
       return null;
     }
     let ghostY = this.activePiece.y;
-    while (!this.collides(this.activePiece.type, this.activePiece.x, ghostY + 1, this.activePiece.rotation)) {
-      ghostY += 1;
+    while (
+      !this.collides(
+        this.activePiece.type,
+        this.activePiece.x,
+        ghostY + this.gravityDirection,
+        this.activePiece.rotation
+      )
+    ) {
+      ghostY += this.gravityDirection;
     }
     return ghostY;
+  }
+
+  isGravityShiftEnabled() {
+    return Boolean(this.sessionConfig.gravityShiftEnabled);
+  }
+
+  getGravityDirectionForElapsed(elapsedMs = this.elapsedMs) {
+    if (!this.isGravityShiftEnabled()) {
+      return 1;
+    }
+    return Math.floor(Math.max(0, elapsedMs) / GRAVITY_SHIFT_INTERVAL_MS) % 2 === 0 ? 1 : -1;
+  }
+
+  updateGravityDirection(previousElapsedMs) {
+    const nextDirection = this.getGravityDirectionForElapsed(this.elapsedMs);
+    if (nextDirection === this.gravityDirection) {
+      return;
+    }
+
+    this.gravityDirection = nextDirection;
+    this.gravityAccumulator = 0;
+    this.lockAccumulator = 0;
+    this.effects.push({
+      type: "gravity-shift",
+      direction: nextDirection,
+      previousDirection: this.getGravityDirectionForElapsed(previousElapsedMs),
+    });
+  }
+
+  getGravityShiftState() {
+    if (!this.isGravityShiftEnabled()) {
+      return {
+        enabled: false,
+        direction: 1,
+        msUntilFlip: null,
+        warning: false,
+      };
+    }
+
+    const progressMs = this.elapsedMs % GRAVITY_SHIFT_INTERVAL_MS;
+    const msUntilFlip = GRAVITY_SHIFT_INTERVAL_MS - progressMs || GRAVITY_SHIFT_INTERVAL_MS;
+    return {
+      enabled: true,
+      direction: this.gravityDirection,
+      msUntilFlip,
+      warning: msUntilFlip <= GRAVITY_SHIFT_WARNING_MS,
+    };
   }
 
   getActiveCells({ ghost = false } = {}) {
@@ -536,6 +609,7 @@ export class TetrisEngine {
       canHold: this.canHold,
       gravityAccumulator: this.gravityAccumulator,
       lockAccumulator: this.lockAccumulator,
+      gravityDirection: this.gravityDirection,
       lastRotation: this.lastRotation ? { ...this.lastRotation } : null,
       lastClear: { ...this.lastClear },
       sessionConfig: { ...this.sessionConfig },
@@ -562,6 +636,7 @@ export class TetrisEngine {
     this.canHold = snapshot.canHold;
     this.gravityAccumulator = snapshot.gravityAccumulator;
     this.lockAccumulator = snapshot.lockAccumulator;
+    this.gravityDirection = snapshot.gravityDirection ?? 1;
     this.lastRotation = snapshot.lastRotation ? { ...snapshot.lastRotation } : null;
     this.lastClear = { ...snapshot.lastClear };
     this.sessionConfig = { ...snapshot.sessionConfig };
@@ -583,6 +658,7 @@ export class TetrisEngine {
       mode: this.mode,
       resultReason: this.resultReason,
       gameMode: this.sessionConfig.gameMode,
+      duelMode: this.sessionConfig.duelMode ?? null,
       seed: this.sessionConfig.seed,
       coordinateSystem: "origin top-left; x increases right; y increases down",
       score: this.score,
@@ -595,6 +671,8 @@ export class TetrisEngine {
       combo: this.combo,
       bestCombo: this.bestCombo,
       backToBack: this.backToBack,
+      gravityDirection: this.gravityDirection,
+      gravityShift: this.getGravityShiftState(),
       lastClear: { ...this.lastClear },
       holdPiece: this.holdPieceType,
       nextQueue: this.queue.slice(0, PREVIEW_COUNT),

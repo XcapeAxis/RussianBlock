@@ -313,6 +313,12 @@ function runEngineSmokeTests() {
   engine.activePiece = { type: "I", rotation: 0, x: 0, y: 22 };
   engine.hardDrop();
   assert(engine.mode === "completed", "Sprint mode should complete after reaching the target line count");
+
+  engine.startNewGame({ gameMode: "gravity_shift", seed: "smoke-gravity" });
+  engine.update(17000);
+  assert(engine.serializeState().gravityShift.warning === true, "Gravity Shift should warn shortly before a flip");
+  engine.update(1000);
+  assert(engine.serializeState().gravityDirection === -1, "Gravity Shift should flip upward after 18 seconds");
 }
 
 async function runDesktopSkillClient(baseUrl) {
@@ -358,8 +364,13 @@ async function runDesktopSkillClient(baseUrl) {
         stdio: "inherit",
       }
     );
+    const timeout = setTimeout(() => {
+      child.kill();
+      reject(new Error("Playwright desktop skill loop timed out after 90 seconds"));
+    }, 90000);
 
     child.on("exit", (code) => {
+      clearTimeout(timeout);
       if (code === 0) {
         resolve();
       } else {
@@ -789,10 +800,11 @@ async function runSharingFlowLoop(baseUrl, playwright) {
       const day = String(current.getDate()).padStart(2, "0");
       return `${year}-${month}-${day}`;
     })();
+    let state;
 
     await page.goto(`${baseUrl}?play=challenge&code=CDEMO1`, { waitUntil: "networkidle" });
     await page.waitForFunction(() => JSON.parse(window.render_game_to_text()).mode === "playing");
-    let state = await getState();
+    state = await getState();
     assert(state.gameMode === "ultra", "Challenge route should start the configured challenge mode");
     assert(state.seed === "shared-ultra-seed", "Challenge route should load the shared seed");
     await page.evaluate(() => window.advanceTime(120000));
@@ -877,6 +889,24 @@ async function runSharingFlowLoop(baseUrl, playwright) {
       mockApi.state.replayUploads.length === 1,
       "Opening the replay page from the result screen should reuse the cached replay upload"
     );
+    await page.locator("#ghost-run-btn").click();
+    await page.waitForFunction(() => {
+      const state = JSON.parse(window.render_game_to_text());
+      return state.mode === "playing" && state.gameMode === "ghost_race" && Boolean(state.ghost);
+    });
+    let ghostState = await getState();
+    assert(ghostState.ghost.duelMode === "ultra", "Result replay entry should start an Ultra ghost duel");
+    assert(ghostState.seed === "shared-ultra-seed", "Ghost duel should reuse the replay seed");
+    await page.evaluate(() => window.advanceTime(4000));
+    const progressedGhostState = await getState();
+    assert(progressedGhostState.ghost.elapsedMs > ghostState.ghost.elapsedMs, "Ghost duel should advance the replay ghost");
+    await page.screenshot({ path: path.join(screenshotDir, "ghost-duel-local.png"), fullPage: false });
+    await page.evaluate(() => window.advanceTime(120000));
+    await page.waitForFunction(() => {
+      const state = JSON.parse(window.render_game_to_text());
+      return state.mode === "completed";
+    });
+    await page.waitForFunction(() => /Ghost Duel/.test(document.querySelector("#result-title")?.textContent ?? ""));
     await page.evaluate(() => {
       try {
         Object.defineProperty(navigator, "share", { configurable: true, value: undefined });
@@ -930,10 +960,22 @@ async function runSharingFlowLoop(baseUrl, playwright) {
       mockApi.state.replayUploads.length === 1,
       "Creating a challenge from a watched replay should not upload the same replay twice"
     );
-    await page.locator("#watch-share-card-btn").click();
-    await page.waitForTimeout(150);
-    await page.screenshot({ path: path.join(screenshotDir, "spectate-desktop.png"), fullPage: false });
-    await page.setViewportSize({ width: 412, height: 915 });
+    await page.locator("#watch-highlight-btn").click();
+    await page.waitForFunction(() =>
+      Array.isArray(window.__clipboardWrites) && window.__clipboardWrites.some((value) => /watch=replay&code=R1&t=/.test(value))
+    );
+    const highlightUrl = await page.evaluate(() =>
+      Array.isArray(window.__clipboardWrites)
+        ? window.__clipboardWrites.findLast((value) => /watch=replay&code=R1&t=/.test(value))
+        : null
+    );
+    await page.locator("#watch-ghost-btn").click();
+    await page.waitForURL((url) => /[?&]play=ghost&code=R1/.test(url.toString()));
+    await page.waitForFunction(() => {
+      const state = JSON.parse(window.render_game_to_text());
+      return state.mode === "playing" && state.gameMode === "ghost_race" && state.ghost?.replayCode === "R1";
+    });
+    await page.screenshot({ path: path.join(screenshotDir, "ghost-duel-remote.png"), fullPage: false });
     await page.goto(`${baseUrl}?watch=replay&code=R1`, { waitUntil: "networkidle" });
     await page.waitForFunction(() => {
       const banner = document.querySelector("#replay-banner");
@@ -945,7 +987,37 @@ async function runSharingFlowLoop(baseUrl, playwright) {
           !panel.classList.contains("watch-panel--hidden")
       );
     });
+    await page.locator("#watch-share-card-btn").click();
+    await page.waitForTimeout(150);
+    await page.screenshot({ path: path.join(screenshotDir, "spectate-desktop.png"), fullPage: false });
+    await page.setViewportSize({ width: 412, height: 915 });
+    await page.goto(highlightUrl ?? `${baseUrl}?watch=replay&code=R1&t=60000`, { waitUntil: "networkidle" });
+    await page.waitForFunction(() => {
+      const banner = document.querySelector("#replay-banner");
+      const panel = document.querySelector("#watch-panel");
+      return Boolean(
+        banner &&
+          panel &&
+          !banner.classList.contains("replay-banner--hidden") &&
+          !panel.classList.contains("watch-panel--hidden")
+      );
+    });
+    await page.waitForFunction(() => {
+      const state = JSON.parse(window.render_game_to_text());
+      return state.spectate?.playing === false && Number(state.spectate?.currentTimeMs ?? 0) > 0;
+    });
     await page.screenshot({ path: path.join(screenshotDir, "spectate-mobile.png"), fullPage: false });
+    await page.goto(`${baseUrl}?watch=replay&code=R1`, { waitUntil: "networkidle" });
+    await page.waitForFunction(() => {
+      const banner = document.querySelector("#replay-banner");
+      const panel = document.querySelector("#watch-panel");
+      return Boolean(
+        banner &&
+          panel &&
+          !banner.classList.contains("replay-banner--hidden") &&
+          !panel.classList.contains("watch-panel--hidden")
+      );
+    });
     await page.locator("#watch-seed-btn").click();
     await page.waitForFunction(() => {
       const state = JSON.parse(window.render_game_to_text());
@@ -985,6 +1057,26 @@ async function runSharingFlowLoop(baseUrl, playwright) {
       }
     );
 
+    await page.goto(`${baseUrl}?play=ghost&source=local-best&mode=ultra`, { waitUntil: "networkidle" });
+    await page.waitForFunction(() => {
+      const state = JSON.parse(window.render_game_to_text());
+      return state.mode === "playing" && state.gameMode === "ghost_race" && state.ghost?.duelMode === "ultra";
+    });
+
+    await page.goto(`${baseUrl}?menu=1`, { waitUntil: "networkidle" });
+    await page.locator("#launch-gravity-shift-btn").click();
+    await page.waitForFunction(() => {
+      const state = JSON.parse(window.render_game_to_text());
+      return state.mode === "playing" && state.gameMode === "gravity_shift";
+    });
+    await page.evaluate(() => window.advanceTime(17000));
+    state = await getState();
+    assert(state.gravityShift?.warning === true, "Gravity Shift should expose its warning state before the flip");
+    await page.evaluate(() => window.advanceTime(1000));
+    state = await getState();
+    assert(state.gravityDirection === -1, "Gravity Shift should flip upward after the countdown");
+    await page.screenshot({ path: path.join(screenshotDir, "gravity-shift.png"), fullPage: false });
+
     if (consoleErrors.length > 0) {
       throw new Error(`Sharing Playwright loop produced console errors:\n${consoleErrors.join("\n")}`);
     }
@@ -1016,10 +1108,19 @@ async function tryRunPlaywrightLoop(baseUrl) {
   }
 
   fs.mkdirSync(screenshotDir, { recursive: true });
-  await runDesktopSkillClient(baseUrl);
-  await runThemeLoop(baseUrl, playwright);
-  await runMobileGestureLoop(baseUrl, playwright);
-  await runSharingFlowLoop(baseUrl, playwright);
+  const scope = process.env.RB_TEST_SCOPE ?? "all";
+  if (scope === "all" || scope === "desktop") {
+    await runDesktopSkillClient(baseUrl);
+  }
+  if (scope === "all" || scope === "theme") {
+    await runThemeLoop(baseUrl, playwright);
+  }
+  if (scope === "all" || scope === "mobile") {
+    await runMobileGestureLoop(baseUrl, playwright);
+  }
+  if (scope === "all" || scope === "sharing") {
+    await runSharingFlowLoop(baseUrl, playwright);
+  }
 }
 
 buildProject({ outDir: testDistDir });

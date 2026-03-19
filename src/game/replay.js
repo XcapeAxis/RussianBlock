@@ -63,7 +63,7 @@ export class ReplayRecorder {
     });
   }
 
-  captureMarker(at, snapshot, reason = "interval") {
+  captureMarker(at, snapshot, reason = "interval", meta = null) {
     const timestamp = Math.max(0, Math.floor(at));
     if (timestamp - this.lastMarkerAt < MARKER_INTERVAL_MS && reason === "interval") {
       return;
@@ -72,6 +72,7 @@ export class ReplayRecorder {
       at: timestamp,
       reason,
       snapshot,
+      ...(meta ? { meta: { ...meta } } : {}),
     });
     this.lastMarkerAt = timestamp;
   }

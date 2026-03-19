@@ -9,6 +9,16 @@ import {
 import { RussianBlockApiClient } from "../api/client.js";
 import { AudioManager } from "../game/audio.js";
 import { TetrisEngine } from "../game/engine.js";
+import {
+  GHOST_DUEL_SUPPORTED_MODES,
+  buildGhostDuelLabel,
+  compareRunsForMode,
+  evaluateGhostRaceResult,
+  isGhostReplaySupported,
+  pickHighlightMarker,
+  resolveGhostReplayMode,
+  sanitizeGhostDuelMode,
+} from "../game/ghost-duel.js";
 import { GAME_MODES, PLAYABLE_PHASE_ONE_MODES, buildGameConfig, getModeDefinition, sanitizeGameMode } from "../game/modes.js";
 import { getPieceCells } from "../game/pieces.js";
 import {
@@ -163,6 +173,39 @@ function buildModeCardsMarkup() {
   }).join("");
 }
 
+function buildGhostDuelModeMarkup() {
+  return GHOST_DUEL_SUPPORTED_MODES.map((modeId) => {
+    const mode = getModeDefinition(modeId);
+    return `
+      <button type="button" class="theme-chip ghost-config-chip" data-ghost-duel-mode="${modeId}" aria-pressed="false">
+        <span class="theme-chip-copy">
+          <strong>${mode.name}</strong>
+          <span>${mode.label}</span>
+        </span>
+      </button>
+    `;
+  }).join("");
+}
+
+function buildGhostSourceMarkup() {
+  return [
+    ["local_best", "Local Best", "Use your strongest saved run for the selected ruleset."],
+    ["local_recent", "Recent Run", "Race the newest saved run for the selected ruleset."],
+    ["shared_code", "Replay Code", "Fetch a remote replay and duel it live."],
+  ]
+    .map(
+      ([sourceId, title, copy]) => `
+        <button type="button" class="theme-chip ghost-config-chip" data-ghost-source="${sourceId}" aria-pressed="false">
+          <span class="theme-chip-copy">
+            <strong>${title}</strong>
+            <span>${copy}</span>
+          </span>
+        </button>
+      `
+    )
+    .join("");
+}
+
 function applyCssVariables(styleTarget, theme) {
   const entries = {
     "--bg-0": theme.ui.bg0,
@@ -217,6 +260,16 @@ function distanceBetweenPoints(a, b) {
 
 function formatSpectateMarkerLabel(reason) {
   return SPECTATE_MARKER_LABELS[reason] ?? "Marker";
+}
+
+function formatGhostMetricValue(metric, value) {
+  if (metric === "score") {
+    return formatScore(Number(value) || 0);
+  }
+  if (metric === "time") {
+    return formatDuration(Number(value) || 0);
+  }
+  return String(Number(value) || 0);
 }
 
 function buildSpectateSpeedMarkup() {
@@ -294,12 +347,18 @@ export class RussianBlockApp {
     this.activeRecorder = null;
     this.lastReplay = null;
     this.lastRunSummary = null;
+    this.lastGhostResult = null;
     this.replayPlayer = null;
     this.liveEngine = null;
     this.replayMeta = null;
     this.spectateSession = null;
     this.spectateMarker = null;
     this.spectateMarkersSignature = "";
+    this.ghostPlayer = null;
+    this.ghostSession = null;
+    this.selectedGhostDuelMode = "sprint";
+    this.selectedGhostSource = "local_best";
+    this.ghostReplayCode = "";
     this.selectedGameMode = sanitizeGameMode(this.settings.lastMode);
     this.selectedSeed = this.settings.lastSeed;
     this.statusMessage = "";
@@ -327,8 +386,11 @@ export class RussianBlockApp {
     this.applyTheme();
     this.bindEvents();
     this.shareCodeInput.value = this.query.get("code") ?? "";
+    this.ghostReplayCode = this.query.get("code") ?? "";
     const hasSharedRoute =
       (this.query.get("play") === "challenge" && Boolean(this.query.get("code"))) ||
+      (this.query.get("play") === "ghost" &&
+        (Boolean(this.query.get("code")) || this.query.get("source") === "local-best")) ||
       (this.query.get("watch") === "replay" && Boolean(this.query.get("code"))) ||
       (this.query.get("play") === "puzzle" && Boolean(this.query.get("code")));
     if (hasSharedRoute) {
@@ -350,7 +412,7 @@ export class RussianBlockApp {
       requestAnimationFrame(this.renderFrame);
     }
 
-    window.render_game_to_text = () => JSON.stringify(this.engine.serializeState());
+    window.render_game_to_text = () => JSON.stringify(this.buildTextState());
     window.advanceTime = (ms) => {
       this.advanceTime(ms);
     };
@@ -382,6 +444,22 @@ export class RussianBlockApp {
               </div>
               <div class="theme-carousel" id="mode-carousel">
                 ${buildModeCardsMarkup()}
+              </div>
+              <div class="theme-showcase ghost-config ghost-config--hidden" id="ghost-config">
+                <span class="theme-showcase-label">Ghost Duel Setup</span>
+                <strong id="ghost-config-title">Sprint 40L</strong>
+                <p id="ghost-config-copy">Race your best saved replay or load a shared code.</p>
+                <div class="settings-theme-grid ghost-config-grid" id="ghost-duel-mode-grid">
+                  ${buildGhostDuelModeMarkup()}
+                </div>
+                <div class="settings-theme-grid ghost-config-grid" id="ghost-source-grid">
+                  ${buildGhostSourceMarkup()}
+                </div>
+                <label class="seed-field ghost-code-field ghost-code-field--hidden" id="ghost-code-field">
+                  <span class="theme-showcase-label">Replay Code</span>
+                  <input type="text" id="ghost-code-input" placeholder="Enter a shared replay code" />
+                </label>
+                <p class="overlay-hint overlay-hint--compact" id="ghost-config-status"></p>
               </div>
               <label class="seed-field" id="seed-field">
                 <span class="theme-showcase-label">Challenge Seed</span>
@@ -421,6 +499,18 @@ export class RussianBlockApp {
                   <button type="button" class="secondary-btn menu-mini-btn" id="load-daily-btn">今日挑战</button>
                 </div>
               </div>
+              <div class="menu-history">
+                <div class="menu-history-head">
+                  <span class="theme-showcase-label">Labs / Experimental</span>
+                </div>
+                <div class="history-card history-card--lab">
+                  <div class="history-row history-row--static">
+                    <strong>Gravity Shift</strong>
+                    <span>Flip gravity every 18 seconds with a 1.5 second warning window.</span>
+                  </div>
+                  <button type="button" class="secondary-btn menu-mini-btn" id="launch-gravity-shift-btn">Launch Lab</button>
+                </div>
+              </div>
               <p class="overlay-hint" id="status-copy"></p>
               <p class="overlay-hint">触屏：左右滑移动，单击旋转，下拖软降，下甩硬降，双击 Hold。键盘：A/D 移动，W 旋转，Space 硬降，C Hold。</p>
             </div>
@@ -448,6 +538,8 @@ export class RussianBlockApp {
                 <button type="button" class="secondary-btn" id="replay-full-btn">回放本局</button>
                 <button type="button" class="secondary-btn" id="replay-clip-btn">回放最后 8 秒</button>
                 <button type="button" class="secondary-btn" id="share-run-btn">导出回放</button>
+                <button type="button" class="secondary-btn" id="highlight-share-btn">Share Highlight</button>
+                <button type="button" class="secondary-btn" id="ghost-run-btn">Race This Replay</button>
                 <button type="button" class="secondary-btn" id="challenge-run-btn">生成挑战</button>
               </div>
             </div>
@@ -535,6 +627,12 @@ export class RussianBlockApp {
     this.menuThemeDescription = this.root.querySelector("#theme-description");
     this.menuModeName = this.root.querySelector("#mode-name");
     this.menuModeDescription = this.root.querySelector("#mode-description");
+    this.ghostConfig = this.root.querySelector("#ghost-config");
+    this.ghostConfigTitle = this.root.querySelector("#ghost-config-title");
+    this.ghostConfigCopy = this.root.querySelector("#ghost-config-copy");
+    this.ghostConfigStatus = this.root.querySelector("#ghost-config-status");
+    this.ghostCodeField = this.root.querySelector("#ghost-code-field");
+    this.ghostCodeInput = this.root.querySelector("#ghost-code-input");
     this.seedField = this.root.querySelector("#seed-field");
     this.seedInput = this.root.querySelector("#seed-input");
     this.shareCodeInput = this.root.querySelector("#share-code-input");
@@ -590,8 +688,10 @@ export class RussianBlockApp {
       <div class="spectate-marker-list" id="spectate-marker-list"></div>
       <div class="overlay-actions watch-panel-actions">
         <button type="button" class="secondary-btn" id="watch-copy-btn">Copy Link</button>
+        <button type="button" class="secondary-btn" id="watch-highlight-btn">Share Highlight</button>
         <button type="button" class="secondary-btn" id="watch-share-card-btn">Share Card</button>
         <button type="button" class="secondary-btn" id="watch-challenge-btn">Create Challenge</button>
+        <button type="button" class="secondary-btn" id="watch-ghost-btn">Play This Ghost</button>
         <button type="button" class="primary-btn" id="watch-seed-btn">玩同一题</button>
         <button type="button" class="secondary-btn" id="watch-menu-btn">回到菜单</button>
       </div>
@@ -605,11 +705,15 @@ export class RussianBlockApp {
     this.spectateProgress = this.watchPanel.querySelector("#spectate-progress");
     this.spectateMarkerList = this.watchPanel.querySelector("#spectate-marker-list");
     this.watchCopyButton = this.watchPanel.querySelector("#watch-copy-btn");
+    this.watchHighlightButton = this.watchPanel.querySelector("#watch-highlight-btn");
     this.watchShareCardButton = this.watchPanel.querySelector("#watch-share-card-btn");
     this.watchChallengeButton = this.watchPanel.querySelector("#watch-challenge-btn");
+    this.watchGhostButton = this.watchPanel.querySelector("#watch-ghost-btn");
     this.watchSeedButton = this.watchPanel.querySelector("#watch-seed-btn");
     this.watchMenuButton = this.watchPanel.querySelector("#watch-menu-btn");
     this.spectateSpeedButtons = Array.from(this.watchPanel.querySelectorAll("[data-spectate-speed]"));
+    this.ghostModeButtons = Array.from(this.root.querySelectorAll("[data-ghost-duel-mode]"));
+    this.ghostSourceButtons = Array.from(this.root.querySelectorAll("[data-ghost-source]"));
     this.remoteSessionPanel = document.createElement("section");
     this.remoteSessionPanel.id = "remote-session-panel";
     this.remoteSessionPanel.className = "remote-session-panel remote-session-panel--hidden";
@@ -621,6 +725,19 @@ export class RussianBlockApp {
     this.watchPanel.insertAdjacentElement("afterend", this.remoteSessionPanel);
     this.remoteSessionTitle = this.remoteSessionPanel.querySelector("#remote-session-title");
     this.remoteSessionCopy = this.remoteSessionPanel.querySelector("#remote-session-copy");
+    this.ghostSessionPanel = document.createElement("section");
+    this.ghostSessionPanel.id = "ghost-session-panel";
+    this.ghostSessionPanel.className = "ghost-session-panel ghost-session-panel--hidden";
+    this.ghostSessionPanel.innerHTML = `
+      <span class="eyebrow">Ghost Duel</span>
+      <strong id="ghost-session-title"></strong>
+      <p id="ghost-session-copy"></p>
+      <div class="watch-panel-grid ghost-session-grid" id="ghost-session-grid"></div>
+    `;
+    this.remoteSessionPanel.insertAdjacentElement("afterend", this.ghostSessionPanel);
+    this.ghostSessionTitle = this.ghostSessionPanel.querySelector("#ghost-session-title");
+    this.ghostSessionCopy = this.ghostSessionPanel.querySelector("#ghost-session-copy");
+    this.ghostSessionGrid = this.ghostSessionPanel.querySelector("#ghost-session-grid");
     this.resultLeaderboard = document.createElement("section");
     this.resultLeaderboard.id = "result-leaderboard";
     this.resultLeaderboard.className = "leaderboard-panel leaderboard-panel--hidden";
@@ -646,7 +763,7 @@ export class RussianBlockApp {
       this.resizeCanvas();
     });
 
-    this.root.querySelector("#start-btn").addEventListener("click", () => this.startGame());
+    this.root.querySelector("#start-btn").addEventListener("click", () => void this.startSelectedMode());
     this.root.querySelector("#fullscreen-btn").addEventListener("click", () => this.toggleFullscreen());
     this.root.querySelector("#resume-btn").addEventListener("click", () => this.resumeGame());
     this.root.querySelector("#restart-btn").addEventListener("click", () => this.restartGame());
@@ -656,6 +773,8 @@ export class RussianBlockApp {
     this.root.querySelector("#replay-full-btn").addEventListener("click", () => this.replayLastRun());
     this.root.querySelector("#replay-clip-btn").addEventListener("click", () => this.replayLastClip());
     this.root.querySelector("#share-run-btn").addEventListener("click", () => this.shareLastReplay());
+    this.root.querySelector("#highlight-share-btn").addEventListener("click", () => void this.shareHighlightForReplay(this.lastReplay));
+    this.root.querySelector("#ghost-run-btn").addEventListener("click", () => void this.startGhostRaceFromReplay(this.lastReplay));
     this.shareCardButton.addEventListener("click", () => void this.shareResultCard());
     this.viewReplayPageButton.addEventListener("click", () => void this.openSharedReplayPageForReplay(this.lastReplay));
     this.root.querySelector("#challenge-run-btn").addEventListener("click", () => this.createChallengeFromLastRun());
@@ -663,8 +782,10 @@ export class RussianBlockApp {
     this.root.querySelector("#replay-restart-btn").addEventListener("click", () => this.restartReplay());
     this.root.querySelector("#exit-replay-btn").addEventListener("click", () => this.stopReplay());
     this.watchCopyButton.addEventListener("click", () => void this.copySpectateReplayLink());
+    this.watchHighlightButton.addEventListener("click", () => void this.shareHighlightForReplay(this.getSpectateReplay()));
     this.watchShareCardButton.addEventListener("click", () => void this.shareSpectateReplayCard());
     this.watchChallengeButton.addEventListener("click", () => void this.createChallengeFromSpectateReplay());
+    this.watchGhostButton.addEventListener("click", () => void this.startGhostRaceFromSpectateReplay());
     this.watchSeedButton.addEventListener("click", () => this.startGameFromSpectateReplay());
     this.watchMenuButton.addEventListener("click", () => {
       this.stopReplay();
@@ -681,12 +802,19 @@ export class RussianBlockApp {
     this.root.querySelector("#play-challenge-btn").addEventListener("click", () => this.openChallengeFromCode(this.shareCodeInput.value));
     this.root.querySelector("#watch-shared-replay-btn").addEventListener("click", () => this.openReplayFromCode(this.shareCodeInput.value));
     this.root.querySelector("#load-daily-btn").addEventListener("click", () => this.loadDailyChallenge());
+    this.root.querySelector("#launch-gravity-shift-btn").addEventListener("click", () => this.startGravityShiftLab());
     this.root.querySelector("#settings-btn").addEventListener("click", () => this.toggleSettings());
     this.pauseButton.addEventListener("click", () => this.togglePause());
     this.root.querySelector("#close-settings-btn").addEventListener("click", () => this.toggleSettings(false));
 
     this.root.querySelectorAll("[data-mode-card]").forEach((button) => {
       button.addEventListener("click", () => this.setSelectedMode(button.dataset.modeCard));
+    });
+    this.ghostModeButtons.forEach((button) => {
+      button.addEventListener("click", () => this.setGhostDuelMode(button.dataset.ghostDuelMode));
+    });
+    this.ghostSourceButtons.forEach((button) => {
+      button.addEventListener("click", () => this.setGhostSource(button.dataset.ghostSource));
     });
     this.root.querySelectorAll("[data-theme-card]").forEach((button) => {
       button.addEventListener("click", () => this.setTheme(button.dataset.themeCard, { playFeedback: true }));
@@ -698,6 +826,19 @@ export class RussianBlockApp {
       this.selectedSeed = this.seedInput.value.trim();
       this.settings.lastSeed = this.selectedSeed;
       this.persistSettings();
+    });
+    this.ghostCodeInput.addEventListener("input", () => {
+      this.ghostReplayCode = this.ghostCodeInput.value.trim();
+      this.shareCodeInput.value = this.ghostReplayCode;
+      this.updateModeUi();
+    });
+    this.shareCodeInput.addEventListener("input", () => {
+      const code = this.shareCodeInput.value.trim();
+      if (this.selectedGhostSource === "shared_code") {
+        this.ghostReplayCode = code;
+        this.ghostCodeInput.value = code;
+        this.updateModeUi();
+      }
     });
 
     this.muteToggle.addEventListener("change", () => {
@@ -784,12 +925,58 @@ export class RussianBlockApp {
     this.updateModeUi();
   }
 
+  setGhostDuelMode(modeId) {
+    this.selectedGhostDuelMode = sanitizeGhostDuelMode(modeId);
+    this.updateModeUi();
+  }
+
+  setGhostSource(sourceId) {
+    const nextSource = ["local_best", "local_recent", "shared_code"].includes(sourceId)
+      ? sourceId
+      : "local_best";
+    this.selectedGhostSource = nextSource;
+    if (nextSource !== "shared_code") {
+      this.ghostReplayCode = "";
+      this.ghostCodeInput.value = "";
+    }
+    this.updateModeUi();
+  }
+
   updateModeUi() {
     const mode = getModeDefinition(this.selectedGameMode);
     this.menuModeName.textContent = mode.label;
     this.menuModeDescription.textContent = mode.description;
     this.seedInput.value = this.selectedSeed;
     this.seedField.hidden = !mode.usesSeed;
+    const ghostModeActive = this.selectedGameMode === "ghost_race";
+    this.ghostConfig.classList.toggle("ghost-config--hidden", !ghostModeActive);
+    this.ghostCodeField.classList.toggle("ghost-code-field--hidden", !(ghostModeActive && this.selectedGhostSource === "shared_code"));
+    this.ghostCodeInput.value = this.ghostReplayCode;
+    this.ghostConfigTitle.textContent = buildGhostDuelLabel(this.selectedGhostDuelMode);
+    this.ghostConfigCopy.textContent =
+      this.selectedGhostSource === "shared_code"
+        ? "Fetch a remote replay, then launch a live duel on the same seed."
+        : this.selectedGhostSource === "local_recent"
+          ? "Race the newest saved run for the selected ruleset."
+          : "Race your strongest saved run for the selected ruleset.";
+    this.ghostModeButtons.forEach((button) => {
+      const active = button.dataset.ghostDuelMode === this.selectedGhostDuelMode;
+      button.setAttribute("aria-pressed", String(active));
+    });
+    this.ghostSourceButtons.forEach((button) => {
+      const active = button.dataset.ghostSource === this.selectedGhostSource;
+      button.setAttribute("aria-pressed", String(active));
+    });
+    const previewReplay = ghostModeActive ? this.resolveGhostMenuReplay() : null;
+    this.ghostConfigStatus.textContent = ghostModeActive
+      ? this.selectedGhostSource === "shared_code"
+        ? this.ghostReplayCode
+          ? `Ready to fetch replay ${this.ghostReplayCode}.`
+          : "Enter a replay code to start Ghost Duel."
+        : previewReplay
+          ? `Ready: ${previewReplay.sourceLabel}`
+          : `No saved ${getModeDefinition(this.selectedGhostDuelMode).name} replay is available yet.`
+      : "";
     this.root.querySelectorAll("[data-mode-card]").forEach((button) => {
       const active = button.dataset.modeCard === this.selectedGameMode;
       button.setAttribute("aria-pressed", String(active));
@@ -800,7 +987,42 @@ export class RussianBlockApp {
     return buildGameConfig({
       gameMode: overrides.gameMode ?? this.selectedGameMode,
       seed: overrides.seed ?? this.selectedSeed,
+      duelMode: overrides.duelMode ?? this.selectedGhostDuelMode,
     });
+  }
+
+  resolveGhostMenuReplay() {
+    if (this.selectedGhostSource === "shared_code") {
+      return null;
+    }
+
+    const targetMode = this.selectedGhostDuelMode;
+    const candidates = this.profile.runs
+      .map((run) => ({
+        run,
+        replay: getReplayForRun(this.profile, run.replayId),
+      }))
+      .filter(({ replay }) => replay && resolveGhostReplayMode(replay) === targetMode);
+
+    if (candidates.length === 0) {
+      return null;
+    }
+
+    if (this.selectedGhostSource === "local_recent") {
+      const latest = candidates[0];
+      return {
+        replay: latest.replay,
+        sourceType: "local_recent",
+        sourceLabel: `Recent ${getModeDefinition(targetMode).name}`,
+      };
+    }
+
+    const best = [...candidates].sort((left, right) => compareRunsForMode(targetMode, right.run, left.run))[0];
+    return {
+      replay: best.replay,
+      sourceType: "local_best",
+      sourceLabel: `Best ${getModeDefinition(targetMode).name}`,
+    };
   }
 
   setRemoteSession(context) {
@@ -811,12 +1033,23 @@ export class RussianBlockApp {
     this.remoteLeaderboardError = "";
   }
 
-  buildReplayShareUrl(code) {
-    return `${window.location.origin}${window.location.pathname}?watch=replay&code=${encodeURIComponent(code)}`;
+  buildReplayShareUrl(code, atMs = null) {
+    const params = new URLSearchParams({
+      watch: "replay",
+      code,
+    });
+    if (atMs !== null && atMs !== undefined) {
+      params.set("t", String(Math.max(0, Math.floor(atMs))));
+    }
+    return `${window.location.origin}${window.location.pathname}?${params.toString()}`;
   }
 
   buildChallengeShareUrl(code) {
     return `${window.location.origin}${window.location.pathname}?play=challenge&code=${encodeURIComponent(code)}`;
+  }
+
+  buildGhostShareUrl(code) {
+    return `${window.location.origin}${window.location.pathname}?play=ghost&code=${encodeURIComponent(code)}`;
   }
 
   getCachedReplayShare(replay) {
@@ -870,11 +1103,13 @@ export class RussianBlockApp {
       return this.lastRunSummary;
     }
 
+    const replayMode = sanitizeGameMode(replay.mode);
+    const duelMode = replayMode === "ghost_race" ? resolveGhostReplayMode(replay) ?? "sprint" : null;
     const result = replay.result ?? {};
     return {
       id: replay.replayId ?? `remote-${replay.mode}-${replay.seed}-${replay.durationMs}`,
-      gameMode: sanitizeGameMode(replay.mode),
-      label: getModeDefinition(sanitizeGameMode(replay.mode)).label,
+      gameMode: replayMode,
+      label: replayMode === "ghost_race" ? buildGhostDuelLabel(duelMode) : getModeDefinition(replayMode).label,
       outcome: result.mode === "completed" ? "completed" : "gameover",
       reason: result.resultReason ?? "",
       score: Number(result.score) || 0,
@@ -887,6 +1122,8 @@ export class RussianBlockApp {
       themeId: replay.themeId ?? this.theme.id,
       createdAt: replay.createdAt ?? new Date().toISOString(),
       replayId: replay.replayId ?? "",
+      duelMode,
+      ghostResult: replay.ghostSummary?.result ?? null,
     };
   }
 
@@ -1180,19 +1417,23 @@ export class RussianBlockApp {
     this.activeRecorder.recordAction(type, this.engine.elapsedMs, payload);
   }
 
-  captureRecorderMarker(reason = "interval") {
+  captureRecorderMarker(reason = "interval", meta = null) {
     if (!this.activeRecorder || this.replayPlayer) {
       return;
     }
-    this.activeRecorder.captureMarker(this.engine.elapsedMs, this.engine.exportSnapshot(), reason);
+    this.activeRecorder.captureMarker(this.engine.elapsedMs, this.engine.exportSnapshot(), reason, meta);
   }
 
   buildRunSummary(replay) {
     const runId = createRunId();
+    const duelMode = this.engine.sessionConfig.duelMode ?? null;
     return {
       id: runId,
       gameMode: this.engine.sessionConfig.gameMode,
-      label: getModeDefinition(this.engine.sessionConfig.gameMode).label,
+      label:
+        this.engine.sessionConfig.gameMode === "ghost_race"
+          ? buildGhostDuelLabel(duelMode)
+          : getModeDefinition(this.engine.sessionConfig.gameMode).label,
       outcome: this.engine.mode === "completed" ? "completed" : "gameover",
       reason: this.engine.resultReason,
       score: this.engine.score,
@@ -1205,6 +1446,8 @@ export class RussianBlockApp {
       themeId: this.theme.id,
       createdAt: new Date().toISOString(),
       replayId: replay.replayId,
+      duelMode,
+      ghostResult: this.lastGhostResult ? { ...this.lastGhostResult } : null,
     };
   }
 
@@ -1218,6 +1461,17 @@ export class RussianBlockApp {
       result: this.engine.serializeState(),
       finalSnapshot: this.engine.exportSnapshot(),
     });
+    if (this.ghostSession) {
+      replay.duelMode = this.engine.sessionConfig.duelMode ?? resolveGhostReplayMode(this.ghostSession.replay) ?? null;
+      replay.sourceReplayCode = this.ghostSession.replayCode ?? null;
+      replay.sourceReplayId = this.ghostSession.replayId ?? null;
+      replay.ghostSummary = {
+        duelMode: replay.duelMode,
+        sourceType: this.ghostSession.sourceType,
+        sourceLabel: this.ghostSession.sourceLabel,
+        result: this.lastGhostResult ? { ...this.lastGhostResult } : null,
+      };
+    }
     this.lastReplay = replay;
     this.lastReplayShare = null;
     this.lastRunSummary = this.buildRunSummary(replay);
@@ -1312,7 +1566,7 @@ export class RussianBlockApp {
 
   startReplay(
     replay,
-    { startAtMs = 0, title = "本局回放", subtitle = "正在播放本地回放。", watchSession = null } = {}
+    { startAtMs = 0, title = "本局回放", subtitle = "正在播放本地回放。", watchSession = null, isPlaying = true } = {}
   ) {
     if (!replay || this.replayPlayer) {
       return;
@@ -1333,7 +1587,7 @@ export class RussianBlockApp {
       currentTimeMs: startAtMs,
       durationMs: replay.durationMs,
       speed: watchSession?.speed ?? 1,
-      isPlaying: true,
+      isPlaying,
     });
     this.replayMeta = {
       replay,
@@ -1341,6 +1595,7 @@ export class RussianBlockApp {
       title,
       subtitle,
       spectateSession: watchSession ?? null,
+      isPlaying,
     };
     this.replayTitle.textContent = title;
     this.replayCopy.textContent = subtitle;
@@ -1364,6 +1619,293 @@ export class RussianBlockApp {
     this.render();
   }
 
+  buildCurrentRunSnapshot() {
+    return {
+      outcome: this.engine.mode === "completed" ? "completed" : this.engine.mode === "gameover" ? "gameover" : "playing",
+      reason: this.engine.resultReason,
+      score: this.engine.score,
+      lines: this.engine.lines,
+      durationMs: this.engine.elapsedMs,
+      level: this.engine.level,
+    };
+  }
+
+  clearGhostSession({ preserveLastResult = false } = {}) {
+    this.ghostPlayer = null;
+    this.ghostSession = null;
+    if (!preserveLastResult) {
+      this.lastGhostResult = null;
+    }
+  }
+
+  syncGhostSession() {
+    if (!this.ghostPlayer || !this.ghostSession) {
+      return;
+    }
+
+    const replay = this.ghostSession.replay;
+    const durationMs = Number(replay?.durationMs) || 0;
+    this.ghostSession.elapsedMs = clamp(Number(this.ghostPlayer.elapsedMs) || 0, 0, durationMs);
+    this.ghostSession.status = this.ghostPlayer.finished ? "finished" : "racing";
+    if (this.ghostPlayer.finished && !this.ghostSession.finishedAtMs) {
+      this.ghostSession.finishedAtMs = this.ghostSession.elapsedMs;
+    }
+  }
+
+  getGhostReplaySummary() {
+    return this.buildRunSummaryFromReplay(this.ghostSession?.replay ?? null);
+  }
+
+  finishGhostRace() {
+    if (!this.ghostSession) {
+      return null;
+    }
+
+    const duelMode = this.engine.sessionConfig.duelMode ?? resolveGhostReplayMode(this.ghostSession.replay) ?? "sprint";
+    const playerSummary = this.buildCurrentRunSnapshot();
+    const ghostSummary = this.getGhostReplaySummary();
+    this.lastGhostResult = evaluateGhostRaceResult(duelMode, playerSummary, ghostSummary);
+    this.syncGhostSession();
+    return this.lastGhostResult;
+  }
+
+  getGhostHudState() {
+    if (!this.ghostSession || !this.ghostPlayer) {
+      return null;
+    }
+
+    const duelMode = this.engine.sessionConfig.duelMode ?? resolveGhostReplayMode(this.ghostSession.replay) ?? "sprint";
+    const ghostEngine = this.ghostPlayer.engine;
+    const playerSnapshot = this.buildCurrentRunSnapshot();
+    const ghostSnapshot = {
+      outcome:
+        ghostEngine.mode === "completed" ? "completed" : ghostEngine.mode === "gameover" ? "gameover" : "playing",
+      reason: ghostEngine.resultReason,
+      score: ghostEngine.score,
+      lines: ghostEngine.lines,
+      durationMs: ghostEngine.elapsedMs,
+    };
+    const comparison = this.lastGhostResult ?? evaluateGhostRaceResult(duelMode, playerSnapshot, this.getGhostReplaySummary());
+    const sourceLabel = this.ghostSession.sourceLabel ?? "Replay Ghost";
+
+    if (duelMode === "sprint") {
+      const lineGap = (Number(playerSnapshot.lines) || 0) - (Number(ghostSnapshot.lines) || 0);
+      const leadCopy =
+        this.engine.mode === "completed" || this.engine.mode === "gameover" || this.ghostPlayer.finished
+          ? comparison.outcome === "win"
+            ? `Ahead by ${formatGhostMetricValue(comparison.metric, Math.abs(comparison.ghostValue - comparison.playerValue))}`
+            : comparison.outcome === "lose"
+              ? `Behind by ${formatGhostMetricValue(comparison.metric, Math.abs(comparison.ghostValue - comparison.playerValue))}`
+              : "Dead even"
+          : lineGap === 0
+            ? "Neck and neck"
+            : lineGap > 0
+              ? `Ahead ${lineGap} lines`
+              : `Behind ${Math.abs(lineGap)} lines`;
+      return {
+        title: buildGhostDuelLabel(duelMode),
+        sourceLabel,
+        leadCopy,
+        progressCopy: `${playerSnapshot.lines}/40 · Ghost ${ghostSnapshot.lines}/40`,
+        statusCopy: this.ghostPlayer.finished
+          ? `Ghost cleared in ${formatDuration(this.ghostSession.finishedAtMs ?? this.ghostSession.replay.durationMs)}`
+          : "Clear 40 lines before the ghost does.",
+      };
+    }
+
+    const scoreGap = (Number(playerSnapshot.score) || 0) - (Number(ghostSnapshot.score) || 0);
+    const leadCopy =
+      this.engine.mode === "completed" || this.engine.mode === "gameover"
+        ? comparison.outcome === "win"
+          ? `Ahead by ${formatGhostMetricValue(comparison.metric, Math.abs(comparison.ghostValue - comparison.playerValue))}`
+          : comparison.outcome === "lose"
+            ? `Behind by ${formatGhostMetricValue(comparison.metric, Math.abs(comparison.ghostValue - comparison.playerValue))}`
+            : "Dead even"
+        : scoreGap === 0
+          ? "Scores tied"
+          : scoreGap > 0
+            ? `Ahead ${formatScore(scoreGap)} pts`
+            : `Behind ${formatScore(Math.abs(scoreGap))} pts`;
+    return {
+      title: buildGhostDuelLabel(duelMode),
+      sourceLabel,
+      leadCopy,
+      progressCopy: `${formatTimer(this.engine.remainingMs)} left · Ghost ${formatScore(ghostSnapshot.score)} pts`,
+      statusCopy: this.ghostPlayer.finished
+        ? `Ghost finished with ${formatScore(this.getGhostReplaySummary()?.score ?? 0)}`
+        : "Outscore the ghost before the clock runs out.",
+    };
+  }
+
+  async startSelectedMode() {
+    if (this.selectedGameMode === "ghost_race") {
+      await this.startConfiguredGhostRace();
+      return;
+    }
+
+    this.startGame();
+  }
+
+  async startConfiguredGhostRace() {
+    if (this.selectedGhostSource === "shared_code") {
+      const code = this.ghostReplayCode || this.shareCodeInput.value.trim();
+      await this.openGhostRaceFromCode(code);
+      return;
+    }
+
+    const resolved = this.resolveGhostMenuReplay();
+    if (!resolved?.replay) {
+      this.statusMessage = `No saved ${getModeDefinition(this.selectedGhostDuelMode).name} replay is available yet.`;
+      this.updateUiState();
+      return;
+    }
+
+    await this.startGhostRaceFromReplay(resolved.replay, resolved);
+  }
+
+  async openGhostRaceFromCode(code) {
+    const normalizedCode = String(code ?? "").trim();
+    if (!normalizedCode) {
+      this.statusMessage = "Enter a replay code first.";
+      this.updateUiState();
+      return false;
+    }
+    if (!this.apiClient.configured) {
+      this.statusMessage = "Configure API Base first.";
+      this.updateUiState();
+      return false;
+    }
+
+    try {
+      const response = await this.apiClient.getReplay(normalizedCode);
+      const replay = response.replay ?? response;
+      if (!isGhostReplaySupported(replay)) {
+        this.statusMessage = "Ghost Duel only supports Sprint / Ultra replays.";
+        this.updateUiState();
+        return false;
+      }
+      this.rememberReplayShare(replay, {
+        code: normalizedCode,
+        url: response.url ?? this.buildReplayShareUrl(normalizedCode),
+        summary: response.summary ?? null,
+      });
+      this.shareCodeInput.value = normalizedCode;
+      this.ghostReplayCode = normalizedCode;
+      return this.startGhostRaceFromReplay(replay, {
+        sourceType: "shared_code",
+        sourceLabel: `Replay ${normalizedCode}`,
+        replayCode: normalizedCode,
+      });
+    } catch (error) {
+      this.statusMessage = error instanceof Error ? error.message : "Failed to load ghost replay.";
+      this.updateUiState();
+      return false;
+    }
+  }
+
+  async startGhostRaceFromReplay(replay, options = {}) {
+    if (!replay) {
+      this.statusMessage = "No replay is available.";
+      this.updateUiState();
+      return false;
+    }
+
+    const duelMode = resolveGhostReplayMode(replay);
+    if (!duelMode) {
+      this.statusMessage = "Ghost Duel only supports Sprint / Ultra.";
+      this.updateUiState();
+      return false;
+    }
+
+    if (this.replayPlayer) {
+      this.stopReplay();
+    }
+
+    this.audio.unlock();
+    this.toggleSettings(false);
+    this.clearPendingTouchTap();
+    this.releaseGestureInput();
+    this.setRemoteSession(null);
+    this.clearGhostSession();
+    this.statusMessage = "";
+
+    const config = this.createGameConfig({
+      gameMode: "ghost_race",
+      duelMode,
+      seed: replay.seed,
+    });
+    this.selectedGameMode = "ghost_race";
+    this.selectedGhostDuelMode = duelMode;
+    this.selectedSeed = config.seed;
+    this.engine.startNewGame(config);
+    this.settings.lastMode = config.gameMode;
+    this.settings.lastSeed = config.seed;
+    this.beginRecordingSession();
+    this.ghostPlayer = new ReplayPlayer(replay);
+    this.ghostSession = {
+      sourceType: options.sourceType ?? "local_best",
+      sourceLabel: options.sourceLabel ?? `Replay ${replay.replayId ?? replay.seed}`,
+      replayCode: options.replayCode ?? this.getCachedReplayShare(replay)?.code ?? "",
+      replayId: replay.replayId ?? options.replayId ?? "",
+      replay,
+      status: "racing",
+      elapsedMs: 0,
+      finishedAtMs: null,
+    };
+    this.lastGhostResult = null;
+    this.syncGhostSession();
+    this.audio.play("click");
+    this.statusMessage = `Ghost Duel ready against ${this.ghostSession.sourceLabel}.`;
+    this.afterStateChange();
+    return true;
+  }
+
+  async startGhostRaceFromSpectateReplay() {
+    const replay = this.getSpectateReplay();
+    if (!replay) {
+      return false;
+    }
+
+    if (this.watchSession?.code) {
+      const ghostUrl = this.buildGhostShareUrl(this.watchSession.code);
+      window.location.assign(ghostUrl);
+      return true;
+    }
+
+    return this.startGhostRaceFromReplay(replay, {
+      sourceType: "local_recent",
+      sourceLabel: "Current Replay",
+      replayCode: this.spectateSession?.code ?? "",
+    });
+  }
+
+  async shareHighlightForReplay(replay) {
+    if (!replay) {
+      this.statusMessage = "No replay is available.";
+      this.updateUiState();
+      return null;
+    }
+    if (!this.apiClient.configured) {
+      this.statusMessage = "Configure API Base first.";
+      this.updateUiState();
+      return null;
+    }
+
+    try {
+      const share = await this.ensureReplayShare(replay);
+      const marker = pickHighlightMarker(replay);
+      const url = this.buildReplayShareUrl(share.code, marker.at);
+      await this.copyTextToClipboard(url);
+      this.statusMessage = `Highlight link copied at ${formatDuration(marker.at)}.`;
+      this.updateUiState();
+      return url;
+    } catch (error) {
+      this.statusMessage = error instanceof Error ? error.message : "Failed to share highlight.";
+      this.updateUiState();
+      return null;
+    }
+  }
+
   startGameFromSpectateReplay() {
     const watchSession = this.spectateSession;
     if (!watchSession?.replay) {
@@ -1373,11 +1915,15 @@ export class RussianBlockApp {
     if (this.replayPlayer) {
       this.stopReplay();
     }
+    const replayMode =
+      sanitizeGameMode(replay.mode) === "ghost_race"
+        ? resolveGhostReplayMode(replay) ?? "sprint"
+        : sanitizeGameMode(replay.mode);
     this.startGame({
-      gameMode: sanitizeGameMode(replay.mode),
+      gameMode: replayMode,
       seed: replay.seed,
     });
-    this.statusMessage = `已切换到 ${getModeDefinition(replay.mode).label} 同种子对局。`;
+    this.statusMessage = `已切换到 ${getModeDefinition(replayMode).label} 同种子对局。`;
     this.updateUiState();
   }
 
@@ -1385,9 +1931,9 @@ export class RussianBlockApp {
     if (!this.replayMeta) {
       return;
     }
-    const { replay, startAtMs, title, subtitle, spectateSession } = this.replayMeta;
+    const { replay, startAtMs, title, subtitle, spectateSession, isPlaying } = this.replayMeta;
     this.stopReplay();
-    this.startReplay(replay, { startAtMs, title, subtitle, watchSession: spectateSession });
+    this.startReplay(replay, { startAtMs, title, subtitle, watchSession: spectateSession, isPlaying });
   }
 
   replayLastRun() {
@@ -1742,9 +2288,13 @@ export class RussianBlockApp {
 
     try {
       const replayResponse = await this.ensureReplayShare(replay);
+      const challengeMode =
+        sanitizeGameMode(replay.mode) === "ghost_race"
+          ? resolveGhostReplayMode(replay) ?? this.selectedGhostDuelMode
+          : replay.mode;
       const challengeResponse = await this.apiClient.createChallenge({
         kind: "score_chase",
-        mode: replay.mode,
+        mode: challengeMode,
         seed: replay.seed,
         replayCode: replayResponse.code,
         goal: {
@@ -1848,7 +2398,7 @@ export class RussianBlockApp {
     }
   }
 
-  async openReplayFromCode(code) {
+  async openReplayFromCode(code, options = {}) {
     const normalizedCode = String(code ?? "").trim();
     if (!normalizedCode) {
       this.statusMessage = "先输入回放码。";
@@ -1873,6 +2423,7 @@ export class RussianBlockApp {
       this.shareCodeInput.value = normalizedCode;
       this.statusMessage = `已载入回放 ${normalizedCode}。`;
       this.startReplay(replay, {
+        startAtMs: Number(options.startAtMs) || 0,
         title: `分享回放 ${normalizedCode}`,
         subtitle: `${getModeDefinition(replay.mode).label} · Seed ${replay.seed}`,
         watchSession: {
@@ -1881,6 +2432,7 @@ export class RussianBlockApp {
           summary: response.summary ?? null,
           shareUrl: response.url ?? this.buildReplayShareUrl(normalizedCode),
         },
+        isPlaying: options.isPlaying !== false,
       });
       this.updateUiState();
     } catch (error) {
@@ -1925,8 +2477,20 @@ export class RussianBlockApp {
     const watchMode = this.query.get("watch");
     if (playMode === "challenge" && code) {
       await this.openChallengeFromCode(code);
+    } else if (playMode === "ghost" && code) {
+      await this.openGhostRaceFromCode(code);
+    } else if (playMode === "ghost" && this.query.get("source") === "local-best") {
+      this.selectedGameMode = "ghost_race";
+      this.selectedGhostSource = "local_best";
+      this.selectedGhostDuelMode = sanitizeGhostDuelMode(this.query.get("mode"));
+      this.updateModeUi();
+      await this.startConfiguredGhostRace();
     } else if (watchMode === "replay" && code) {
-      await this.openReplayFromCode(code);
+      const startAtMs = Math.max(0, Number(this.query.get("t")) || 0);
+      await this.openReplayFromCode(code, {
+        startAtMs,
+        isPlaying: this.query.has("t") ? false : true,
+      });
     } else if (playMode === "puzzle" && code) {
       this.statusMessage = `残局路由 ${code} 已预留，等待后续题面系统接入。`;
       this.updateUiState();
@@ -1950,11 +2514,23 @@ export class RussianBlockApp {
     this.historyList.innerHTML = this.profile.runs
       .slice(0, 5)
       .map((run) => {
+        const replay = getReplayForRun(this.profile, run.replayId);
+        const canRace = isGhostReplaySupported(replay);
         return `
-          <button type="button" class="history-row" data-history-replay="${run.replayId}">
-            <strong>${safeText(run.label)}</strong>
-            <span>${formatScore(run.score)} 分 · ${run.lines} 行 · ${formatDuration(run.durationMs)}</span>
-          </button>
+          <div class="history-card">
+            <button type="button" class="history-row" data-history-replay="${run.replayId}">
+              <strong>${safeText(run.label)}</strong>
+              <span>${formatScore(run.score)} 分 · ${run.lines} 行 · ${formatDuration(run.durationMs)}</span>
+            </button>
+            <button
+              type="button"
+              class="secondary-btn menu-mini-btn"
+              data-history-ghost="${run.replayId}"
+              ${canRace ? "" : 'disabled title="Ghost Duel only supports Sprint / Ultra"'}
+            >
+              Race
+            </button>
+          </div>
         `;
       })
       .join("");
@@ -1968,6 +2544,15 @@ export class RussianBlockApp {
             subtitle: `${getModeDefinition(replay.mode).label} · Seed ${replay.seed}`,
           });
         }
+      });
+    });
+    this.historyList.querySelectorAll("[data-history-ghost]").forEach((button) => {
+      button.addEventListener("click", () => {
+        const replay = getReplayForRun(this.profile, button.dataset.historyGhost);
+        void this.startGhostRaceFromReplay(replay, {
+          sourceType: "local_recent",
+          sourceLabel: "Recent Replay",
+        });
       });
     });
   }
@@ -2391,6 +2976,7 @@ export class RussianBlockApp {
     this.releaseGestureInput();
     this.statusMessage = "";
     this.setRemoteSession(overrides.remoteContext ?? null);
+    this.clearGhostSession();
     const config = this.createGameConfig(overrides);
     this.selectedGameMode = config.gameMode;
     this.selectedSeed = config.seed;
@@ -2442,6 +3028,16 @@ export class RussianBlockApp {
     this.lastRemoteSubmission = null;
     this.engine.restart();
     this.beginRecordingSession();
+    if (this.ghostSession?.replay) {
+      this.ghostPlayer = new ReplayPlayer(this.ghostSession.replay);
+      this.ghostSession.status = "racing";
+      this.ghostSession.elapsedMs = 0;
+      this.ghostSession.finishedAtMs = null;
+      this.lastGhostResult = null;
+      this.syncGhostSession();
+    } else {
+      this.clearGhostSession();
+    }
     this.audio.play("click");
     this.afterStateChange();
   }
@@ -2463,9 +3059,22 @@ export class RussianBlockApp {
     this.releaseGestureInput();
     this.statusMessage = "";
     this.setRemoteSession(null);
+    this.clearGhostSession({ preserveLastResult: true });
     this.engine.resetToMenu();
     this.audio.play("click");
     this.afterStateChange();
+  }
+
+  startGravityShiftLab() {
+    if (this.replayPlayer) {
+      this.stopReplay();
+    }
+    this.startGame({
+      gameMode: "gravity_shift",
+      seed: this.selectedSeed,
+    });
+    this.statusMessage = "Gravity Shift lab launched. Watch the warning before each flip.";
+    this.updateUiState();
   }
 
   togglePause() {
@@ -2513,15 +3122,22 @@ export class RussianBlockApp {
     for (const effect of this.engine.drainEffects()) {
       if (effect.type === "line-clear") {
         this.audio.play("line-clear");
-        this.captureRecorderMarker(effect.tSpin ? "tspin" : "line-clear");
+        this.captureRecorderMarker(effect.tSpin ? "tspin" : "line-clear", {
+          cleared: effect.cleared,
+          tSpin: effect.tSpin,
+        });
       } else if (effect.type === "completed") {
         this.audio.play("line-clear");
+        this.finishGhostRace();
         this.captureRecorderMarker("completed");
         this.finalizeCurrentRun();
       } else if (effect.type === "gameover") {
         this.audio.play("gameover");
+        this.finishGhostRace();
         this.captureRecorderMarker("gameover");
         this.finalizeCurrentRun();
+      } else if (effect.type === "gravity-shift") {
+        this.audio.play("click");
       } else if (effect.type === "drop") {
         this.audio.play("drop");
       } else if (effect.type === "hold") {
@@ -2544,10 +3160,45 @@ export class RussianBlockApp {
 
     this.tickInputs(deltaMs);
     this.engine.update(deltaMs);
+    if (this.ghostPlayer && this.engine.mode === "playing") {
+      this.ghostPlayer.update(deltaMs);
+      this.syncGhostSession();
+    }
     this.captureRecorderMarker();
     this.processEffects();
     this.updateUiState();
     this.render();
+  }
+
+  buildTextState() {
+    const state = this.engine.serializeState();
+
+    if (this.ghostSession && this.ghostPlayer) {
+      state.ghost = {
+        sourceType: this.ghostSession.sourceType,
+        sourceLabel: this.ghostSession.sourceLabel,
+        replayCode: this.ghostSession.replayCode ?? null,
+        status: this.ghostSession.status,
+        elapsedMs: this.ghostSession.elapsedMs ?? 0,
+        finishedAtMs: this.ghostSession.finishedAtMs ?? null,
+        duelMode: this.engine.sessionConfig.duelMode ?? resolveGhostReplayMode(this.ghostSession.replay),
+        hud: this.getGhostHudState(),
+        board: this.ghostPlayer.engine.getVisibleBoard().map((row) => row.map((cell) => cell ?? ".").join("")),
+        activePiece: this.ghostPlayer.engine.serializeState().activePiece,
+      };
+    }
+
+    if (this.spectateSession) {
+      state.spectate = {
+        playing: this.spectateSession.isPlaying,
+        speed: this.spectateSession.speed,
+        currentTimeMs: this.spectateSession.currentTimeMs,
+        durationMs: this.spectateSession.durationMs,
+        code: this.spectateSession.code || null,
+      };
+    }
+
+    return state;
   }
 
   tickInputs(deltaMs) {
@@ -2639,7 +3290,9 @@ export class RussianBlockApp {
     const sessionContext = !this.replayPlayer && this.activeRemoteSession && this.engine.mode !== "menu"
       ? this.activeRemoteSession
       : null;
+    const ghostHud = !this.replayPlayer && this.ghostSession && this.engine.mode !== "menu" ? this.getGhostHudState() : null;
     this.remoteSessionPanel.classList.toggle("remote-session-panel--hidden", !sessionContext);
+    this.ghostSessionPanel.classList.toggle("ghost-session-panel--hidden", !ghostHud);
     this.updateModeUi();
     this.renderHistory();
 
@@ -2652,6 +3305,19 @@ export class RussianBlockApp {
     } else {
       this.remoteSessionTitle.textContent = "";
       this.remoteSessionCopy.textContent = "";
+    }
+
+    if (ghostHud) {
+      this.ghostSessionTitle.textContent = ghostHud.title;
+      this.ghostSessionCopy.textContent = `${ghostHud.sourceLabel} · ${ghostHud.statusCopy}`;
+      this.ghostSessionGrid.innerHTML = `
+        <div class="watch-panel-chip"><strong>${safeText(ghostHud.leadCopy)}</strong><span>Gap</span></div>
+        <div class="watch-panel-chip"><strong>${safeText(ghostHud.progressCopy)}</strong><span>Progress</span></div>
+      `;
+    } else {
+      this.ghostSessionTitle.textContent = "";
+      this.ghostSessionCopy.textContent = "";
+      this.ghostSessionGrid.innerHTML = "";
     }
 
     if (this.replayPlayer && this.watchSession?.replay) {
@@ -2678,6 +3344,7 @@ export class RussianBlockApp {
       const currentTimeMs = Number(this.spectateSession.currentTimeMs) || 0;
       const durationMs = Number(this.spectateSession.durationMs ?? watchedReplay.durationMs) || 0;
       const shareCode = String(this.spectateSession.code ?? "").trim();
+      const raceSupported = isGhostReplaySupported(watchedReplay);
       this.replayEyebrow.textContent = shareCode ? "Shared Spectate" : "Local Spectate";
       this.replayClock.textContent = formatReplayClock(currentTimeMs, durationMs);
       this.replayMarkerCopy.textContent = this.spectateMarker
@@ -2713,6 +3380,9 @@ export class RussianBlockApp {
         : this.apiClient.configured
           ? "Upload & Copy Link"
           : "Copy Replay JSON";
+      this.watchGhostButton.disabled = !raceSupported;
+      this.watchGhostButton.title = raceSupported ? "" : "Ghost Duel only supports Sprint / Ultra";
+      this.watchHighlightButton.disabled = !shareCode && !this.apiClient.configured;
       this.renderSpectateMarkers();
     } else {
       this.replayEyebrow.textContent = "Spectate";
@@ -2729,6 +3399,9 @@ export class RussianBlockApp {
       this.spectateSpeedButtons.forEach((button) => {
         button.setAttribute("aria-pressed", String(Number(button.dataset.spectateSpeed) === 1));
       });
+      this.watchGhostButton.disabled = false;
+      this.watchGhostButton.title = "";
+      this.watchHighlightButton.disabled = false;
       this.renderSpectateMarkers();
     }
 
@@ -2737,12 +3410,29 @@ export class RussianBlockApp {
       latestRun && this.lastRemoteSubmission?.runId === latestRun.id ? this.lastRemoteSubmission : null;
     const leaderboardContext = latestSubmission?.context ?? this.activeRemoteSession;
     const goalEvaluation = latestRun ? this.evaluateRemoteGoal(leaderboardContext, latestRun) : null;
+    const ghostResult = latestRun?.gameMode === "ghost_race" ? latestRun.ghostResult ?? this.lastGhostResult : null;
     if (this.engine.mode === "completed") {
       this.resultEyebrow.textContent = "Completed";
-      this.resultTitle.textContent = goalEvaluation?.passed === false ? "Challenge Missed" : "挑战完成";
+      this.resultTitle.textContent =
+        latestRun?.gameMode === "ghost_race"
+          ? ghostResult?.outcome === "win"
+            ? "Ghost Duel Won"
+            : ghostResult?.outcome === "lose"
+              ? "Ghost Duel Lost"
+              : "Ghost Duel Draw"
+          : goalEvaluation?.passed === false
+            ? "Challenge Missed"
+            : "挑战完成";
     } else {
       this.resultEyebrow.textContent = "Game Over";
-      this.resultTitle.textContent = "堆到顶了";
+      this.resultTitle.textContent =
+        latestRun?.gameMode === "ghost_race" && ghostResult
+          ? ghostResult.outcome === "win"
+            ? "Ghost Duel Won"
+            : ghostResult.outcome === "lose"
+              ? "Ghost Duel Lost"
+              : "Ghost Duel Draw"
+          : "堆到顶了";
     }
     this.gameOverCopy.textContent = `本局得分 ${formatScore(this.engine.score)}，最高分 ${formatScore(this.engine.bestScore)}。`;
     this.resultGrid.innerHTML = latestRun
@@ -2766,6 +3456,17 @@ export class RussianBlockApp {
       this.resultGrid.innerHTML += `
         <div class="result-chip"><strong>${goalEvaluation.passed ? "Goal reached" : "Goal missed"}</strong><span>Status</span></div>
         <div class="result-chip"><strong>${safeText(goalEvaluation.copy)}</strong><span>Delta</span></div>
+      `;
+    }
+    if (ghostResult) {
+      this.resultGrid.innerHTML += `
+        <div class="result-chip"><strong>${safeText(ghostResult.outcome.toUpperCase())}</strong><span>Ghost Duel</span></div>
+        <div class="result-chip"><strong>${safeText(
+          `${ghostResult.metric}: ${formatGhostMetricValue(ghostResult.metric, ghostResult.playerValue)} vs ${formatGhostMetricValue(
+            ghostResult.metric,
+            ghostResult.ghostValue
+          )}`
+        )}</strong><span>Finish</span></div>
       `;
     }
     if (latestSubmission) {
@@ -2849,6 +3550,12 @@ export class RussianBlockApp {
       this.leaderboardStatus.textContent = "";
       this.leaderboardList.innerHTML = "";
     }
+    const ghostRunButton = this.root.querySelector("#ghost-run-btn");
+    const highlightShareButton = this.root.querySelector("#highlight-share-btn");
+    const canRaceLatestRun = isGhostReplaySupported(this.lastReplay);
+    ghostRunButton.disabled = !canRaceLatestRun;
+    ghostRunButton.title = canRaceLatestRun ? "" : "Ghost Duel only supports Sprint / Ultra";
+    highlightShareButton.disabled = !this.lastReplay || !this.apiClient.configured;
     this.statusCopy.textContent =
       this.statusMessage ||
       `当前模式最佳 ${formatScore(getBestScoreForMode(this.profile, this.selectedGameMode))} 分。`;
@@ -2882,11 +3589,17 @@ export class RussianBlockApp {
 
   getLayout(width, height) {
     const portrait = width < height * 0.85;
+    const ghostActive = Boolean(this.ghostSession && !this.replayPlayer && this.ghostPlayer);
     if (portrait) {
       const topBand = Math.max(156, height * 0.22);
       const headerY = 56;
       const panelHeight = topBand - headerY - 12;
-      const cellSize = Math.min((width - 44) / BOARD_COLS, (height - topBand - 28) / VISIBLE_ROWS);
+      const ghostPanelHeight = ghostActive ? Math.min(164, height * 0.2) : 0;
+      const boardGap = ghostActive ? 14 : 0;
+      const cellSize = Math.min(
+        (width - 44) / BOARD_COLS,
+        (height - topBand - 28 - ghostPanelHeight - boardGap) / VISIBLE_ROWS
+      );
       const boardWidth = cellSize * BOARD_COLS;
       const boardHeight = cellSize * VISIBLE_ROWS;
       return {
@@ -2899,6 +3612,14 @@ export class RussianBlockApp {
         holdPanel: { x: 16, y: headerY, w: 92, h: panelHeight },
         nextPanel: { x: width - 108, y: headerY, w: 92, h: panelHeight },
         statsPanel: { x: width / 2 - 88, y: headerY + 4, w: 176, h: panelHeight - 8 },
+        ghostPanel: ghostActive
+          ? {
+              x: 16,
+              y: topBand + boardHeight + boardGap,
+              w: width - 32,
+              h: ghostPanelHeight,
+            }
+          : null,
         footerY: height - 18,
       };
     }
@@ -2919,6 +3640,14 @@ export class RussianBlockApp {
       holdPanel: { x: boardX - sidePanelWidth - 22, y: boardY + 6, w: sidePanelWidth, h: 190 },
       nextPanel: { x: boardX + boardWidth + 22, y: boardY + 6, w: sidePanelWidth, h: 262 },
       statsPanel: { x: boardX + boardWidth + 22, y: boardY + 282, w: sidePanelWidth, h: 200 },
+      ghostPanel: ghostActive
+        ? {
+            x: boardX - sidePanelWidth - 22,
+            y: boardY + 210,
+            w: sidePanelWidth,
+            h: Math.max(182, boardHeight - 204),
+          }
+        : null,
       footerY: height - 20,
     };
   }
@@ -3086,57 +3815,13 @@ export class RussianBlockApp {
     ctx.fillStyle = boardHighlight;
     fillRoundedRect(ctx, layout.boardX, layout.boardY, layout.boardWidth, layout.boardHeight, 24);
 
-    for (let row = 0; row < VISIBLE_ROWS; row += 1) {
-      for (let col = 0; col < BOARD_COLS; col += 1) {
-        const x = layout.boardX + col * layout.cellSize;
-        const y = layout.boardY + row * layout.cellSize;
-        ctx.fillStyle = this.theme.canvas.boardGrid;
-        fillRoundedRect(
-          ctx,
-          x + 1.4,
-          y + 1.4,
-          layout.cellSize - 2.8,
-          layout.cellSize - 2.8,
-          Math.max(5, layout.cellSize * 0.16)
-        );
-      }
-    }
+    this.drawBoardCells(ctx, this.engine, layout.boardX, layout.boardY, layout.cellSize, {
+      showGhost: this.settings.ghostEnabled,
+    });
 
-    if (this.settings.ghostEnabled) {
-      for (const cell of this.engine.getActiveCells({ ghost: true })) {
-        const row = cell.y - BUFFER_ROWS;
-        if (row < 0 || row >= VISIBLE_ROWS) {
-          continue;
-        }
-        const x = layout.boardX + cell.x * layout.cellSize;
-        const y = layout.boardY + row * layout.cellSize;
-        ctx.strokeStyle = this.theme.canvas.ghost;
-        ctx.lineWidth = Math.max(2, layout.cellSize * 0.08);
-        strokeRoundedRect(
-          ctx,
-          x + 4,
-          y + 4,
-          layout.cellSize - 8,
-          layout.cellSize - 8,
-          Math.max(5, layout.cellSize * 0.16)
-        );
-      }
-    }
-
-    for (let row = BUFFER_ROWS; row < this.engine.board.length; row += 1) {
-      for (let col = 0; col < BOARD_COLS; col += 1) {
-        const type = this.engine.board[row][col];
-        if (type) {
-          this.drawCell(ctx, layout.boardX, layout.boardY, layout.cellSize, col, row - BUFFER_ROWS, type);
-        }
-      }
-    }
-
-    for (const cell of this.engine.getActiveCells()) {
-      const row = cell.y - BUFFER_ROWS;
-      if (row >= 0 && row < VISIBLE_ROWS) {
-        this.drawCell(ctx, layout.boardX, layout.boardY, layout.cellSize, cell.x, row, cell.type);
-      }
+    const gravityState = this.engine.getGravityShiftState?.();
+    if (gravityState?.enabled && gravityState.warning) {
+      this.drawGravityShiftOverlay(ctx, layout, gravityState);
     }
 
     if (this.engine.mode === "paused") {
@@ -3144,6 +3829,126 @@ export class RussianBlockApp {
       fillRoundedRect(ctx, layout.boardX, layout.boardY, layout.boardWidth, layout.boardHeight, 24);
     }
 
+    ctx.restore();
+  }
+
+  drawBoardCells(ctx, engine, boardX, boardY, cellSize, { showGhost = false, alpha = 1 } = {}) {
+    ctx.save();
+    ctx.globalAlpha = alpha;
+    for (let row = 0; row < VISIBLE_ROWS; row += 1) {
+      for (let col = 0; col < BOARD_COLS; col += 1) {
+        const x = boardX + col * cellSize;
+        const y = boardY + row * cellSize;
+        ctx.fillStyle = this.theme.canvas.boardGrid;
+        fillRoundedRect(
+          ctx,
+          x + 1.4,
+          y + 1.4,
+          cellSize - 2.8,
+          cellSize - 2.8,
+          Math.max(5, cellSize * 0.16)
+        );
+      }
+    }
+
+    if (showGhost) {
+      for (const cell of engine.getActiveCells({ ghost: true })) {
+        const row = cell.y - BUFFER_ROWS;
+        if (row < 0 || row >= VISIBLE_ROWS) {
+          continue;
+        }
+        const x = boardX + cell.x * cellSize;
+        const y = boardY + row * cellSize;
+        ctx.strokeStyle = this.theme.canvas.ghost;
+        ctx.lineWidth = Math.max(2, cellSize * 0.08);
+        strokeRoundedRect(
+          ctx,
+          x + 4,
+          y + 4,
+          cellSize - 8,
+          cellSize - 8,
+          Math.max(5, cellSize * 0.16)
+        );
+      }
+    }
+
+    for (let row = BUFFER_ROWS; row < engine.board.length; row += 1) {
+      for (let col = 0; col < BOARD_COLS; col += 1) {
+        const type = engine.board[row][col];
+        if (type) {
+          this.drawCell(ctx, boardX, boardY, cellSize, col, row - BUFFER_ROWS, type);
+        }
+      }
+    }
+
+    for (const cell of engine.getActiveCells()) {
+      const row = cell.y - BUFFER_ROWS;
+      if (row >= 0 && row < VISIBLE_ROWS) {
+        this.drawCell(ctx, boardX, boardY, cellSize, cell.x, row, cell.type);
+      }
+    }
+    ctx.restore();
+  }
+
+  drawGravityShiftOverlay(ctx, layout, gravityState) {
+    ctx.save();
+    ctx.fillStyle = "rgba(255, 145, 77, 0.12)";
+    fillRoundedRect(ctx, layout.boardX, layout.boardY, layout.boardWidth, layout.boardHeight, 24);
+    ctx.strokeStyle = "rgba(255, 176, 77, 0.72)";
+    ctx.lineWidth = 3;
+    strokeRoundedRect(ctx, layout.boardX + 4, layout.boardY + 4, layout.boardWidth - 8, layout.boardHeight - 8, 22);
+    ctx.fillStyle = this.theme.canvas.textPrimary;
+    ctx.font = "700 18px 'Trebuchet MS', 'Segoe UI', sans-serif";
+    ctx.textAlign = "center";
+    ctx.fillText(
+      `Gravity flip in ${Math.max(1, Math.ceil((gravityState.msUntilFlip ?? 0) / 1000))}s`,
+      layout.boardX + layout.boardWidth / 2,
+      layout.boardY + 34
+    );
+    ctx.restore();
+  }
+
+  drawGhostBoardPanel(ctx, rect) {
+    if (!rect || !this.ghostPlayer || !this.ghostSession) {
+      return;
+    }
+
+    this.drawInfoPanel(ctx, rect, "Ghost");
+    const boardPadding = 16;
+    const bottomMetaHeight = this.currentLayout?.portrait ? 52 : 64;
+    const boardAreaWidth = rect.w - boardPadding * 2;
+    const boardAreaHeight = rect.h - 48 - bottomMetaHeight;
+    const cellSize = Math.min(boardAreaWidth / BOARD_COLS, boardAreaHeight / VISIBLE_ROWS);
+    const boardWidth = cellSize * BOARD_COLS;
+    const boardHeight = cellSize * VISIBLE_ROWS;
+    const boardX = rect.x + (rect.w - boardWidth) / 2;
+    const boardY = rect.y + 40;
+
+    ctx.save();
+    ctx.fillStyle = this.theme.canvas.board;
+    fillRoundedRect(ctx, boardX, boardY, boardWidth, boardHeight, 18);
+    ctx.strokeStyle = this.theme.canvas.boardBorder;
+    ctx.lineWidth = 1;
+    strokeRoundedRect(ctx, boardX, boardY, boardWidth, boardHeight, 18);
+    ctx.restore();
+
+    this.drawBoardCells(ctx, this.ghostPlayer.engine, boardX, boardY, cellSize, {
+      showGhost: false,
+      alpha: 0.92,
+    });
+
+    const ghostHud = this.getGhostHudState();
+    if (!ghostHud) {
+      return;
+    }
+
+    ctx.save();
+    ctx.fillStyle = this.theme.canvas.textPrimary;
+    ctx.font = "700 14px 'Trebuchet MS', 'Segoe UI', sans-serif";
+    ctx.fillText(ghostHud.leadCopy, rect.x + 16, rect.y + rect.h - 34);
+    ctx.fillStyle = this.theme.canvas.textMuted;
+    ctx.font = "500 12px 'Trebuchet MS', 'Segoe UI', sans-serif";
+    ctx.fillText(ghostHud.progressCopy, rect.x + 16, rect.y + rect.h - 16);
     ctx.restore();
   }
 
@@ -3282,6 +4087,9 @@ export class RussianBlockApp {
     this.drawInfoPanel(ctx, layout.holdPanel, "Hold");
     this.drawInfoPanel(ctx, layout.nextPanel, "Next");
     this.drawInfoPanel(ctx, layout.statsPanel, "Stats");
+    if (layout.ghostPanel) {
+      this.drawGhostBoardPanel(ctx, layout.ghostPanel);
+    }
 
     if (this.engine.holdPieceType) {
       this.drawPreviewPiece(ctx, this.engine.holdPieceType, layout.holdPanel);
@@ -3352,15 +4160,20 @@ export class RussianBlockApp {
 
   drawStats(ctx, rect) {
     const compact = rect.h < 150;
+    const gravityState = this.engine.getGravityShiftState?.();
+    const modeName =
+      this.engine.sessionConfig.gameMode === "ghost_race"
+        ? buildGhostDuelLabel(this.engine.sessionConfig.duelMode)
+        : getModeDefinition(this.engine.sessionConfig.gameMode).name;
     const lines = compact
       ? [
-          ["模式", getModeDefinition(this.engine.sessionConfig.gameMode).name],
+          ["模式", modeName],
           ["等级", String(this.engine.level)],
           ["消行", String(this.engine.lines)],
           ["连击", String(this.engine.combo)],
         ]
       : [
-          ["模式", getModeDefinition(this.engine.sessionConfig.gameMode).name],
+          ["模式", modeName],
           ["状态", this.engine.mode === "paused" ? "暂停中" : this.engine.mode === "completed" ? "已完成" : this.engine.mode === "gameover" ? "结束" : this.engine.mode === "menu" ? "待开始" : "进行中"],
           ["最高分", formatScore(this.engine.bestScore)],
           ["等级", String(this.engine.level)],
@@ -3370,6 +4183,10 @@ export class RussianBlockApp {
           ["连击", String(this.engine.combo)],
           ["B2B", String(this.engine.backToBack)],
         ];
+    if (!compact && gravityState?.enabled) {
+      lines.push(["Gravity", gravityState.direction > 0 ? "Down" : "Up"]);
+      lines.push(["Flip In", formatDuration(gravityState.msUntilFlip ?? 0)]);
+    }
 
     ctx.save();
     ctx.fillStyle = this.theme.canvas.textMuted;
@@ -3406,6 +4223,10 @@ export class RussianBlockApp {
         ? "回放中 · Esc 退出回放"
         : this.engine.mode === "menu"
           ? `${getModeDefinition(this.selectedGameMode).label} 已就绪`
+          : this.ghostSession
+            ? "Ghost Duel · Pause both boards with P"
+            : this.engine.sessionConfig.gravityShiftEnabled
+              ? "Gravity Shift · Watch the warning before each flip"
           : layout.portrait
             ? "滑动移动 单击旋转 双击 Hold"
             : "P 暂停  R 重开  F 全屏";
