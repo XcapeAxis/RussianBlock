@@ -751,6 +751,13 @@ function boardPoint(geometry, xRatio, yRatio) {
   };
 }
 
+function countGridColumns(template) {
+  return String(template ?? "")
+    .split(" ")
+    .map((token) => token.trim())
+    .filter((token) => token && token !== "none").length;
+}
+
 function buildPieceCells(activePiece, y) {
   if (!activePiece || y === null || y === undefined) {
     return [];
@@ -897,6 +904,70 @@ async function measureGhostContrast(page, state, target = "main", { includeEdge 
   return Math.max(...contrasts);
 }
 
+async function getRect(page, selector) {
+  return page.locator(selector).evaluate((element) => {
+    const rect = element.getBoundingClientRect();
+    return {
+      x: rect.x,
+      y: rect.y,
+      width: rect.width,
+      height: rect.height,
+    };
+  });
+}
+
+async function getDesktopMenuMetrics(page) {
+  return page.evaluate(() => {
+    const countColumns = (template) =>
+      String(template ?? "")
+        .split(" ")
+        .map((token) => token.trim())
+        .filter((token) => token && token !== "none").length;
+    const card = document.querySelector("#menu-overlay .overlay-card");
+    const singleGrid = document.querySelector(".menu-layout-grid--single");
+    const modeCarousel = document.querySelector("#mode-carousel");
+    const themeCarousel = document.querySelector("#theme-carousel");
+    if (!card || !singleGrid || !modeCarousel || !themeCarousel) {
+      throw new Error("Desktop menu metrics could not find required nodes.");
+    }
+
+    return {
+      cardWidth: card.getBoundingClientRect().width,
+      singleColumns: countColumns(getComputedStyle(singleGrid).gridTemplateColumns),
+      modeColumns: countColumns(getComputedStyle(modeCarousel).gridTemplateColumns),
+      themeColumns: countColumns(getComputedStyle(themeCarousel).gridTemplateColumns),
+      modeOverflow: modeCarousel.scrollWidth - modeCarousel.clientWidth,
+      themeOverflow: themeCarousel.scrollWidth - themeCarousel.clientWidth,
+    };
+  });
+}
+
+async function getRoomMenuMetrics(page) {
+  return page.evaluate(() => {
+    const countColumns = (template) =>
+      String(template ?? "")
+        .split(" ")
+        .map((token) => token.trim())
+        .filter((token) => token && token !== "none").length;
+    const roomGrid = document.querySelector(".menu-layout-grid--rooms");
+    const columns = roomGrid?.querySelectorAll(".menu-layout-column") ?? [];
+    const roomLobby = document.querySelector("#room-lobby");
+    if (!roomGrid || columns.length < 2) {
+      throw new Error("Room layout metrics could not find the desktop room grid.");
+    }
+
+    const leftRect = columns[0].getBoundingClientRect();
+    const rightRect = columns[1].getBoundingClientRect();
+    const lobbyRect = roomLobby?.getBoundingClientRect() ?? null;
+    return {
+      roomGridColumns: countColumns(getComputedStyle(roomGrid).gridTemplateColumns),
+      leftX: leftRect.x,
+      rightX: rightRect.x,
+      roomLobbyWidth: lobbyRect?.width ?? 0,
+    };
+  });
+}
+
 function attachConsoleCapture(page, consoleErrors) {
   page.on("console", (message) => {
     if (message.type() === "error") {
@@ -917,7 +988,7 @@ async function runThemeLoop(baseUrl, playwright) {
   const browser = await chromium.launch({ headless: true });
   const context = await browser.newContext({
     locale: "zh-CN",
-    viewport: { width: 1440, height: 980 },
+    viewport: { width: 1366, height: 900 },
   });
   const page = await context.newPage();
   const consoleErrors = [];
@@ -925,11 +996,34 @@ async function runThemeLoop(baseUrl, playwright) {
   const getState = () => page.evaluate(() => JSON.parse(window.render_game_to_text()));
 
   try {
+    await page.goto(`${baseUrl}?menu=1`, { waitUntil: "networkidle" });
+    await page.waitForTimeout(120);
+    const desktopMenuMetrics = await getDesktopMenuMetrics(page);
+    assert(desktopMenuMetrics.cardWidth >= 980, `Desktop menu card should be wide, got ${desktopMenuMetrics.cardWidth}`);
+    assert(desktopMenuMetrics.singleColumns >= 2, "Single menu layout should split into two desktop columns");
+    assert(desktopMenuMetrics.modeColumns >= 2, "Mode cards should switch to a desktop grid");
+    assert(desktopMenuMetrics.themeColumns >= 2, "Theme cards should switch to a desktop grid");
+    assert(desktopMenuMetrics.modeOverflow <= 12, "Mode cards should not rely on desktop horizontal scrolling");
+    assert(desktopMenuMetrics.themeOverflow <= 12, "Theme cards should not rely on desktop horizontal scrolling");
+    await page.screenshot({ path: path.join(screenshotDir, "menu-desktop-wide.png"), fullPage: false });
+
     await page.goto(`${baseUrl}?autostart=1&demo=1`, { waitUntil: "networkidle" });
     await page.waitForTimeout(140);
     assert((await getActiveThemeId(page)) === "classic", "Default theme should be classic");
     let state = await getState();
     assert(state.mode === "playing", "Classic theme screenshot run should enter a playable game");
+    await page.locator("#settings-btn").click();
+    await page.waitForTimeout(70);
+    const settingsRect = await getRect(page, "#settings-panel");
+    assert(settingsRect.width >= 400, `Desktop settings panel should be wider, got ${settingsRect.width}`);
+    await page.locator("#close-settings-btn").click();
+    await page.waitForTimeout(50);
+    await page.locator("#pause-btn").click();
+    await page.waitForTimeout(50);
+    const pauseRect = await getRect(page, "#pause-overlay .overlay-card");
+    assert(pauseRect.width >= 740, `Pause overlay should use the wider desktop card, got ${pauseRect.width}`);
+    await page.locator("#resume-btn").click();
+    await page.waitForTimeout(50);
     assert(state.settings?.ghostEnabled === true, "Classic theme run should keep ghost enabled");
     assert(state.ghostY !== null, "Classic theme run should expose a landing ghost position");
     const classicGhostContrast = await measureGhostContrast(page, state, "main");
@@ -1207,7 +1301,7 @@ async function runSharingFlowLoop(baseUrl, playwright) {
   const context = await browser.newContext({
     acceptDownloads: true,
     locale: "zh-CN",
-    viewport: { width: 1280, height: 900 },
+    viewport: { width: 1536, height: 864 },
   });
   const page = await context.newPage();
   const consoleErrors = [];
@@ -1294,6 +1388,8 @@ async function runSharingFlowLoop(baseUrl, playwright) {
       "Challenge submission should include the stored nickname"
     );
     await expectResultText(page, /已提交/);
+    const resultRect = await getRect(page, "#gameover-overlay .overlay-card");
+    assert(resultRect.width >= 760, `Result overlay should use the wider desktop card, got ${resultRect.width}`);
     await page.waitForFunction(
       () => {
         const target = document.querySelector("#leaderboard-list");
@@ -1418,6 +1514,10 @@ async function runSharingFlowLoop(baseUrl, playwright) {
           /02:00/.test(clock.textContent ?? "")
       );
     });
+    const replayBannerRect = await getRect(page, "#replay-banner");
+    const watchPanelRect = await getRect(page, "#watch-panel");
+    assert(replayBannerRect.width >= 600, `Desktop replay banner should be wider, got ${replayBannerRect.width}`);
+    assert(watchPanelRect.width >= 430, `Desktop watch panel should be wider, got ${watchPanelRect.width}`);
     await page.locator("#watch-copy-btn").click();
     await page.waitForFunction(() => Array.isArray(window.__clipboardWrites) && window.__clipboardWrites.some((value) => /watch=replay&code=R1/.test(value)));
     await page.locator("#watch-challenge-btn").click();
@@ -1498,6 +1598,7 @@ async function runSharingFlowLoop(baseUrl, playwright) {
         Boolean(panel && panel.classList.contains("watch-panel--hidden"))
       );
     });
+    await page.setViewportSize({ width: 1536, height: 864 });
 
     const guestContext = await browser.newContext({
       locale: "zh-CN",
@@ -1524,6 +1625,10 @@ async function runSharingFlowLoop(baseUrl, playwright) {
 
     try {
       await page.goto(`${baseUrl}?menu=1&section=rooms`, { waitUntil: "networkidle" });
+      const initialRoomMetrics = await getRoomMenuMetrics(page);
+      assert(initialRoomMetrics.roomGridColumns >= 2, "Desktop room page should use a two-column layout");
+      assert(initialRoomMetrics.rightX - initialRoomMetrics.leftX >= 280, "Room list should sit beside the create/join column on desktop");
+      await page.screenshot({ path: path.join(screenshotDir, "room-menu-wide.png"), fullPage: false });
       await page.locator('[data-room-mode="ultra"]').click();
       await page.locator("#room-create-btn").click();
       await page.waitForFunction(() => {
@@ -1549,6 +1654,8 @@ async function runSharingFlowLoop(baseUrl, playwright) {
         const state = JSON.parse(window.render_game_to_text());
         return Number(state.room?.players?.length ?? 0) === 2;
       });
+      const joinedRoomMetrics = await getRoomMenuMetrics(page);
+      assert(joinedRoomMetrics.roomLobbyWidth >= 960, `Room lobby should span the full desktop width, got ${joinedRoomMetrics.roomLobbyWidth}`);
 
       await guestPage.locator("#room-ready-btn").click();
       await page.locator("#room-ready-btn").click();

@@ -836,6 +836,7 @@ export class RussianBlockApp {
 
   setupMenuSections() {
     this.menuCard = this.menuOverlay.querySelector(".overlay-card");
+    this.menuCard.classList.add("menu-card");
     const introParagraph = this.menuCard.querySelector("p");
     this.menuNav = document.createElement("div");
     this.menuNav.className = "menu-nav";
@@ -857,23 +858,25 @@ export class RussianBlockApp {
     const labsHistoryBlock = this.root.querySelector("#launch-gravity-shift-btn").closest(".menu-history");
 
     this.singleMenuSection = document.createElement("section");
-    this.singleMenuSection.className = "menu-section";
+    this.singleMenuSection.className = "menu-section menu-section--single";
     this.singleMenuSection.dataset.menuSectionPane = "single";
-    [
-      modeShowcase,
-      modeCarousel,
-      this.seedField,
-      startActions,
-      themeShowcase,
-      themeCarousel,
-      this.menuSummary,
-      recentHistoryBlock,
-    ].forEach((node) => {
-      this.singleMenuSection.append(node);
+    const singleGrid = document.createElement("div");
+    singleGrid.className = "menu-layout-grid menu-layout-grid--single";
+    const singlePrimaryColumn = document.createElement("div");
+    singlePrimaryColumn.className = "menu-layout-column";
+    const singleSecondaryColumn = document.createElement("div");
+    singleSecondaryColumn.className = "menu-layout-column";
+    [modeShowcase, modeCarousel, this.seedField, startActions].forEach((node) => {
+      singlePrimaryColumn.append(node);
     });
+    [themeShowcase, themeCarousel, this.menuSummary, recentHistoryBlock].forEach((node) => {
+      singleSecondaryColumn.append(node);
+    });
+    singleGrid.append(singlePrimaryColumn, singleSecondaryColumn);
+    this.singleMenuSection.append(singleGrid);
 
     this.dailyMenuSection = document.createElement("section");
-    this.dailyMenuSection.className = "menu-section";
+    this.dailyMenuSection.className = "menu-section menu-section--wide";
     this.dailyMenuSection.dataset.menuSectionPane = "daily";
     this.dailyMenuSection.innerHTML = `
       <div class="theme-showcase">
@@ -881,7 +884,12 @@ export class RussianBlockApp {
         <strong>Same seed. Same clock. One clean target.</strong>
         <p>Jump straight into today's fixed challenge and compare results after the run.</p>
       </div>
-      <div class="overlay-actions"></div>
+      <div class="menu-history">
+        <div class="menu-history-head">
+          <span class="theme-showcase-label">Launch</span>
+        </div>
+        <div class="overlay-actions"></div>
+      </div>
       <div class="menu-history">
         <div class="history-card history-card--lab">
           <div class="history-row history-row--static">
@@ -896,7 +904,7 @@ export class RussianBlockApp {
     this.dailyMenuSection.querySelector(".overlay-actions").append(this.dailyLaunchButton);
 
     this.spectateMenuSection = document.createElement("section");
-    this.spectateMenuSection.className = "menu-section";
+    this.spectateMenuSection.className = "menu-section menu-section--spectate";
     this.spectateMenuSection.dataset.menuSectionPane = "spectate";
     const shareHeadLabel = shareHistoryBlock.querySelector(".theme-showcase-label");
     if (shareHeadLabel) {
@@ -908,7 +916,7 @@ export class RussianBlockApp {
     this.spectateMenuSection.append(shareHistoryBlock);
 
     this.labsMenuSection = document.createElement("section");
-    this.labsMenuSection.className = "menu-section";
+    this.labsMenuSection.className = "menu-section menu-section--wide";
     this.labsMenuSection.dataset.menuSectionPane = "labs";
     this.labsMenuSection.innerHTML = `
       <div class="theme-showcase">
@@ -950,7 +958,7 @@ export class RussianBlockApp {
 
   setupRoomUi() {
     this.roomsMenuSection = document.createElement("section");
-    this.roomsMenuSection.className = "menu-section";
+    this.roomsMenuSection.className = "menu-section menu-section--rooms";
     this.roomsMenuSection.dataset.menuSectionPane = "rooms";
     this.roomsMenuSection.innerHTML = `
       <div class="theme-showcase">
@@ -962,7 +970,7 @@ export class RussianBlockApp {
         <div class="menu-history-head">
           <span class="theme-showcase-label">Create Room</span>
         </div>
-        <div class="settings-theme-grid ghost-config-grid" id="room-mode-grid">
+        <div class="settings-theme-grid ghost-config-grid room-mode-grid" id="room-mode-grid">
           ${buildRoomModeMarkup()}
         </div>
         <label class="toggle-row room-toggle-row">
@@ -1023,6 +1031,24 @@ export class RussianBlockApp {
         <div class="history-list" id="room-list"></div>
       </div>
     `;
+    const roomShowcase = this.roomsMenuSection.querySelector(".theme-showcase");
+    const createRoomBlock = this.roomsMenuSection.querySelector(".menu-history");
+    const joinRoomBlock = this.roomsMenuSection.querySelectorAll(".menu-history")[1];
+    const roomLobbyBlock = this.roomsMenuSection.querySelector("#room-lobby");
+    const publicRoomsBlock = this.roomsMenuSection.querySelectorAll(".menu-history")[3];
+    const roomGrid = document.createElement("div");
+    roomGrid.className = "menu-layout-grid menu-layout-grid--rooms";
+    const roomPrimaryColumn = document.createElement("div");
+    roomPrimaryColumn.className = "menu-layout-column";
+    const roomSecondaryColumn = document.createElement("div");
+    roomSecondaryColumn.className = "menu-layout-column";
+    const roomFullSpan = document.createElement("div");
+    roomFullSpan.className = "menu-layout-span";
+    roomPrimaryColumn.append(createRoomBlock, joinRoomBlock);
+    roomSecondaryColumn.append(publicRoomsBlock);
+    roomFullSpan.append(roomLobbyBlock);
+    roomGrid.append(roomPrimaryColumn, roomSecondaryColumn, roomFullSpan);
+    this.roomsMenuSection.replaceChildren(roomShowcase, roomGrid);
     this.menuSectionContainer.insertBefore(this.roomsMenuSection, this.dailyMenuSection);
     this.roomModeButtons = Array.from(this.roomsMenuSection.querySelectorAll("[data-room-mode]"));
     this.roomFilterButtons = Array.from(this.roomsMenuSection.querySelectorAll("[data-room-filter]"));

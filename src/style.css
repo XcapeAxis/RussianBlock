@@ -151,6 +151,11 @@ input {
   line-height: 1.55;
 }
 
+.menu-card {
+  max-height: min(92dvh, 1080px);
+  overflow: auto;
+}
+
 .eyebrow {
   display: inline-block;
   margin-bottom: 10px;
@@ -231,6 +236,10 @@ input {
   overflow-x: auto;
   overscroll-behavior-x: contain;
   scrollbar-width: thin;
+}
+
+.menu-sections {
+  margin-top: 20px;
 }
 
 .theme-card {
@@ -358,7 +367,16 @@ input {
 }
 
 .menu-section--active {
-  display: block;
+  display: grid;
+  gap: 16px;
+}
+
+.menu-layout-grid,
+.menu-layout-column,
+.menu-layout-span {
+  display: grid;
+  gap: 16px;
+  min-width: 0;
 }
 
 .summary-chip {
@@ -936,6 +954,156 @@ input {
 @media (min-width: 960px) {
   .app-shell {
     padding: 24px;
+  }
+}
+
+@media (min-width: 1180px) {
+  .menu-card {
+    width: min(1120px, calc(100% - 56px));
+    padding: 34px 36px;
+  }
+
+  .menu-sections {
+    margin-top: 22px;
+  }
+
+  .menu-layout-grid--single {
+    grid-template-columns: minmax(0, 1.08fr) minmax(340px, 0.92fr);
+    gap: 20px 22px;
+    align-items: start;
+  }
+
+  .menu-layout-grid--rooms {
+    grid-template-columns: minmax(0, 0.96fr) minmax(0, 1.04fr);
+    gap: 20px 22px;
+    align-items: start;
+  }
+
+  .menu-layout-span {
+    grid-column: 1 / -1;
+  }
+
+  .menu-section--wide {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 20px 22px;
+    align-items: start;
+  }
+
+  .menu-section--wide > .theme-showcase {
+    grid-column: 1 / -1;
+  }
+
+  .menu-section--spectate > .menu-history {
+    max-width: 860px;
+  }
+
+  .menu-section--single .theme-carousel {
+    grid-auto-flow: row;
+    grid-auto-columns: auto;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    overflow: visible;
+    padding-bottom: 0;
+  }
+
+  .menu-section--single .theme-card {
+    min-height: 100%;
+  }
+
+  .menu-section--single .overlay-actions,
+  .menu-section--wide .overlay-actions,
+  .menu-section--rooms .overlay-actions {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+    width: 100%;
+  }
+
+  .menu-section--single .primary-btn,
+  .menu-section--single .secondary-btn,
+  .menu-section--wide .primary-btn,
+  .menu-section--wide .secondary-btn,
+  .menu-section--rooms .primary-btn,
+  .menu-section--rooms .secondary-btn {
+    width: 100%;
+  }
+
+  .menu-section--rooms .room-mode-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .menu-section--rooms .room-lobby-grid {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+  }
+
+  .menu-section--rooms .room-filter-group {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+  }
+
+  .menu-section--rooms .room-lobby .overlay-actions,
+  .menu-section--rooms .room-result-actions {
+    grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+  }
+
+  .overlay-card--compact {
+    width: min(840px, calc(100% - 88px));
+    padding: 30px 32px;
+  }
+
+  .overlay-card--compact .overlay-actions {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+    width: 100%;
+  }
+
+  .overlay-card--compact .primary-btn,
+  .overlay-card--compact .secondary-btn {
+    width: 100%;
+  }
+
+  .overlay-card--compact .result-grid {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    gap: 12px;
+  }
+
+  .stage {
+    --desktop-side-panel-width: clamp(450px, 33vw, 520px);
+  }
+
+  .replay-banner {
+    left: 24px;
+    top: 24px;
+    width: min(720px, calc(100% - var(--desktop-side-panel-width) - 72px));
+    padding: 18px 22px;
+  }
+
+  .watch-panel {
+    top: 24px;
+    right: 24px;
+    bottom: 24px;
+    width: var(--desktop-side-panel-width);
+    padding: 20px 22px;
+  }
+
+  .remote-session-panel,
+  .ghost-session-panel {
+    left: 24px;
+    right: calc(var(--desktop-side-panel-width) + 48px);
+    top: 160px;
+    padding: 16px 22px;
+  }
+
+  .watch-panel-grid {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+
+  .leaderboard-panel {
+    padding: 16px 18px;
+  }
+
+  .settings-panel {
+    top: 24px;
+    left: 24px;
+    width: min(440px, calc(100% - 48px));
+    padding: 22px;
   }
 }
 
