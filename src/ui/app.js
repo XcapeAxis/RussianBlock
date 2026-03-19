@@ -4119,8 +4119,25 @@ export class RussianBlockApp {
 
   buildTextState() {
     const state = this.engine.serializeState();
+    state.settings = {
+      ghostEnabled: this.settings.ghostEnabled,
+      themeId: this.settings.themeId,
+    };
+
+    if (this.currentLayout) {
+      state.layout = {
+        board: {
+          boardX: this.currentLayout.boardX,
+          boardY: this.currentLayout.boardY,
+          boardWidth: this.currentLayout.boardWidth,
+          boardHeight: this.currentLayout.boardHeight,
+          cellSize: this.currentLayout.cellSize,
+        },
+      };
+    }
 
     if (this.ghostSession && this.ghostPlayer) {
+      const ghostBoardLayout = this.getGhostBoardMetrics(this.currentLayout?.ghostPanel);
       state.ghost = {
         sourceType: this.ghostSession.sourceType,
         sourceLabel: this.ghostSession.sourceLabel,
@@ -4132,7 +4149,14 @@ export class RussianBlockApp {
         hud: this.getGhostHudState(),
         board: this.ghostPlayer.engine.getVisibleBoard().map((row) => row.map((cell) => cell ?? ".").join("")),
         activePiece: this.ghostPlayer.engine.serializeState().activePiece,
+        ghostY: this.ghostPlayer.engine.serializeState().ghostY,
       };
+      if (ghostBoardLayout) {
+        state.layout = {
+          ...(state.layout ?? {}),
+          ghostBoard: ghostBoardLayout,
+        };
+      }
     }
 
     if (this.spectateSession) {
@@ -4870,32 +4894,22 @@ export class RussianBlockApp {
       }
     }
 
-    if (showGhost) {
-      for (const cell of engine.getActiveCells({ ghost: true })) {
-        const row = cell.y - BUFFER_ROWS;
-        if (row < 0 || row >= VISIBLE_ROWS) {
-          continue;
-        }
-        const x = boardX + cell.x * cellSize;
-        const y = boardY + row * cellSize;
-        ctx.strokeStyle = this.theme.canvas.ghost;
-        ctx.lineWidth = Math.max(2, cellSize * 0.08);
-        strokeRoundedRect(
-          ctx,
-          x + 4,
-          y + 4,
-          cellSize - 8,
-          cellSize - 8,
-          Math.max(5, cellSize * 0.16)
-        );
-      }
-    }
-
     for (let row = BUFFER_ROWS; row < engine.board.length; row += 1) {
       for (let col = 0; col < BOARD_COLS; col += 1) {
         const type = engine.board[row][col];
         if (type) {
           this.drawCell(ctx, boardX, boardY, cellSize, col, row - BUFFER_ROWS, type);
+        }
+      }
+    }
+
+    // Contract: the main playable board always owns landing-ghost rendering.
+    // Passive boards such as the rival ghost panel opt out via showGhost: false.
+    if (showGhost) {
+      for (const cell of engine.getActiveCells({ ghost: true })) {
+        const row = cell.y - BUFFER_ROWS;
+        if (row >= 0 && row < VISIBLE_ROWS) {
+          this.drawGhostCell(ctx, boardX, boardY, cellSize, cell.x, row);
         }
       }
     }
@@ -4927,12 +4941,11 @@ export class RussianBlockApp {
     ctx.restore();
   }
 
-  drawGhostBoardPanel(ctx, rect) {
+  getGhostBoardMetrics(rect) {
     if (!rect || !this.ghostPlayer || !this.ghostSession) {
-      return;
+      return null;
     }
 
-    this.drawInfoPanel(ctx, rect, "Ghost");
     const boardPadding = 16;
     const bottomMetaHeight = this.currentLayout?.portrait ? 52 : 64;
     const boardAreaWidth = rect.w - boardPadding * 2;
@@ -4940,8 +4953,26 @@ export class RussianBlockApp {
     const cellSize = Math.min(boardAreaWidth / BOARD_COLS, boardAreaHeight / VISIBLE_ROWS);
     const boardWidth = cellSize * BOARD_COLS;
     const boardHeight = cellSize * VISIBLE_ROWS;
-    const boardX = rect.x + (rect.w - boardWidth) / 2;
-    const boardY = rect.y + 40;
+    return {
+      boardX: rect.x + (rect.w - boardWidth) / 2,
+      boardY: rect.y + 40,
+      boardWidth,
+      boardHeight,
+      cellSize,
+    };
+  }
+
+  drawGhostBoardPanel(ctx, rect) {
+    if (!rect || !this.ghostPlayer || !this.ghostSession) {
+      return;
+    }
+
+    this.drawInfoPanel(ctx, rect, "Ghost");
+    const boardLayout = this.getGhostBoardMetrics(rect);
+    if (!boardLayout) {
+      return;
+    }
+    const { boardX, boardY, boardWidth, boardHeight, cellSize } = boardLayout;
 
     ctx.save();
     ctx.fillStyle = this.theme.canvas.board;
@@ -4968,6 +4999,37 @@ export class RussianBlockApp {
     ctx.fillStyle = this.theme.canvas.textMuted;
     ctx.font = "500 12px 'Trebuchet MS', 'Segoe UI', sans-serif";
     ctx.fillText(ghostHud.progressCopy, rect.x + 16, rect.y + rect.h - 16);
+    ctx.restore();
+  }
+
+  drawGhostCell(ctx, boardX, boardY, cellSize, col, row) {
+    const x = boardX + col * cellSize;
+    const y = boardY + row * cellSize;
+    const pad = Math.max(2.5, cellSize * 0.13);
+    const innerX = x + pad;
+    const innerY = y + pad;
+    const innerSize = cellSize - pad * 2;
+    const radius = Math.max(4, cellSize * 0.18);
+
+    ctx.save();
+    ctx.shadowBlur = Math.max(8, cellSize * 0.28);
+    ctx.shadowColor = this.theme.canvas.ghostGlow;
+    ctx.fillStyle = this.theme.canvas.ghostFill;
+    fillRoundedRect(ctx, innerX, innerY, innerSize, innerSize, radius);
+    ctx.shadowBlur = 0;
+    ctx.strokeStyle = this.theme.canvas.ghostStroke;
+    ctx.lineWidth = Math.max(1.8, cellSize * 0.075);
+    strokeRoundedRect(ctx, innerX, innerY, innerSize, innerSize, radius);
+    ctx.strokeStyle = this.theme.canvas.ghost;
+    ctx.lineWidth = Math.max(1, cellSize * 0.035);
+    strokeRoundedRect(
+      ctx,
+      innerX + Math.max(1, cellSize * 0.04),
+      innerY + Math.max(1, cellSize * 0.04),
+      innerSize - Math.max(2, cellSize * 0.08),
+      innerSize - Math.max(2, cellSize * 0.08),
+      Math.max(3, radius * 0.72)
+    );
     ctx.restore();
   }
 

@@ -13,9 +13,50 @@ function createPieceStyles(material, palette) {
   );
 }
 
+function clampAlpha(value) {
+  return Math.max(0, Math.min(1, value));
+}
+
+function parseRgbColor(color) {
+  const match = String(color ?? "")
+    .trim()
+    .match(/^rgba?\(\s*(\d{1,3})\s*,\s*(\d{1,3})\s*,\s*(\d{1,3})(?:\s*,\s*([01]?(?:\.\d+)?))?\s*\)$/i);
+  if (!match) {
+    return null;
+  }
+
+  return {
+    r: Number(match[1]),
+    g: Number(match[2]),
+    b: Number(match[3]),
+    a: match[4] === undefined ? 1 : clampAlpha(Number(match[4])),
+  };
+}
+
+function toRgba(color) {
+  return `rgba(${color.r}, ${color.g}, ${color.b}, ${clampAlpha(color.a).toFixed(3)})`;
+}
+
+function normalizeGhostCanvas(canvas) {
+  const parsedGhost = parseRgbColor(canvas.ghost) ?? { r: 255, g: 255, b: 255, a: 0.28 };
+  const baseGhost = {
+    ...parsedGhost,
+    a: Math.max(parsedGhost.a, 0.28),
+  };
+
+  return {
+    ...canvas,
+    ghost: toRgba(baseGhost),
+    ghostFill: canvas.ghostFill ?? toRgba({ ...baseGhost, a: Math.max(baseGhost.a * 0.7, 0.2) }),
+    ghostStroke: canvas.ghostStroke ?? toRgba({ ...baseGhost, a: Math.max(baseGhost.a + 0.28, 0.58) }),
+    ghostGlow: canvas.ghostGlow ?? toRgba({ ...baseGhost, a: Math.max(baseGhost.a * 1.05, 0.28) }),
+  };
+}
+
 function createTheme(definition) {
   return {
     ...definition,
+    canvas: normalizeGhostCanvas(definition.canvas),
     preview: {
       ...definition.preview,
       stops: definition.preview.stops.join(", "),
@@ -445,4 +486,3 @@ export function isThemeId(value) {
 export function getTheme(themeId) {
   return THEMES_BY_ID[themeId] ?? THEMES_BY_ID[DEFAULT_THEME_ID];
 }
-

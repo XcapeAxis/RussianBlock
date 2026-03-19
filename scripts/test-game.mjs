@@ -7,6 +7,7 @@ import { spawn } from "node:child_process";
 import { buildProject } from "./build.mjs";
 import { startStaticServer } from "./static-server.mjs";
 import { TetrisEngine } from "../src/game/engine.js";
+import { getPieceCells } from "../src/game/pieces.js";
 import { evaluateRoomWinner } from "../src/game/room-utils.js";
 
 const rootDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -750,6 +751,152 @@ function boardPoint(geometry, xRatio, yRatio) {
   };
 }
 
+function buildPieceCells(activePiece, y) {
+  if (!activePiece || y === null || y === undefined) {
+    return [];
+  }
+
+  return getPieceCells(activePiece.type, activePiece.rotation).map(([dx, dy]) => ({
+    x: activePiece.x + dx,
+    y: y + dy,
+  }));
+}
+
+function buildOccupiedCellSet(board, activePiece) {
+  const occupied = new Set();
+  if (Array.isArray(board)) {
+    board.forEach((row, rowIndex) => {
+      [...String(row ?? "")].forEach((cell, colIndex) => {
+        if (cell && cell !== ".") {
+          occupied.add(`${colIndex},${rowIndex}`);
+        }
+      });
+    });
+  }
+  for (const cell of buildPieceCells(activePiece, activePiece?.y ?? null)) {
+    occupied.add(`${cell.x},${cell.y}`);
+  }
+  return occupied;
+}
+
+function findEmptyNeighborCell(board, occupied, ghostCells, originCell) {
+  const ghostSet = new Set(ghostCells.map((cell) => `${cell.x},${cell.y}`));
+  const candidates = [
+    { x: originCell.x - 1, y: originCell.y },
+    { x: originCell.x + 1, y: originCell.y },
+    { x: originCell.x, y: originCell.y - 1 },
+    { x: originCell.x, y: originCell.y + 1 },
+    { x: originCell.x - 2, y: originCell.y },
+    { x: originCell.x + 2, y: originCell.y },
+  ];
+  for (const cell of candidates) {
+    if (cell.x < 0 || cell.x >= 10 || cell.y < 0 || cell.y >= 20) {
+      continue;
+    }
+    const key = `${cell.x},${cell.y}`;
+    if (ghostSet.has(key) || occupied.has(key)) {
+      continue;
+    }
+    if (String(board?.[cell.y] ?? "")[cell.x] === ".") {
+      return cell;
+    }
+  }
+  return null;
+}
+
+function colorDistance(left, right) {
+  return (
+    Math.abs(left[0] - right[0]) +
+    Math.abs(left[1] - right[1]) +
+    Math.abs(left[2] - right[2])
+  ) / 3;
+}
+
+async function sampleCanvasCell(page, layout, cell, xRatio, yRatio) {
+  return page.evaluate(
+    ({ layoutInfo, boardCell, pointXRatio, pointYRatio }) => {
+      const canvas = document.querySelector("#game-canvas");
+      if (!canvas) {
+        throw new Error("Canvas was not found for ghost sampling.");
+      }
+      const context = canvas.getContext("2d", { willReadFrequently: true });
+      if (!context) {
+        throw new Error("Canvas 2D context was not available for ghost sampling.");
+      }
+
+      const rect = canvas.getBoundingClientRect();
+      const scaleX = canvas.width / rect.width;
+      const scaleY = canvas.height / rect.height;
+      const sampleX = Math.round((layoutInfo.boardX + (boardCell.x + pointXRatio) * layoutInfo.cellSize) * scaleX);
+      const sampleY = Math.round((layoutInfo.boardY + (boardCell.y + pointYRatio) * layoutInfo.cellSize) * scaleY);
+      return [...context.getImageData(sampleX, sampleY, 1, 1).data];
+    },
+    { layoutInfo: layout, boardCell: cell, pointXRatio: xRatio, pointYRatio: yRatio }
+  );
+}
+
+async function measureGhostContrast(page, state, target = "main", { includeEdge = true, aggregate = "max" } = {}) {
+  const source =
+    target === "ghost"
+      ? {
+          board: state.ghost?.board,
+          activePiece: state.ghost?.activePiece,
+          ghostY: state.ghost?.ghostY,
+          layout: state.layout?.ghostBoard,
+        }
+      : {
+          board: state.board,
+          activePiece: state.activePiece,
+          ghostY: state.ghostY,
+          layout: state.layout?.board,
+        };
+
+  if (!source.layout) {
+    throw new Error(`Missing ${target} board layout in render_game_to_text output.`);
+  }
+
+  const ghostCells = buildPieceCells(source.activePiece, source.ghostY).filter(
+    (cell) => cell.x >= 0 && cell.x < 10 && cell.y >= 0 && cell.y < 20
+  );
+  if (ghostCells.length === 0) {
+    throw new Error(`Missing ${target} ghost cells for regression sampling.`);
+  }
+
+  const occupied = buildOccupiedCellSet(source.board, source.activePiece);
+  const contrasts = [];
+  for (const cell of ghostCells) {
+    const neighbor = findEmptyNeighborCell(source.board, occupied, ghostCells, cell);
+    if (!neighbor) {
+      continue;
+    }
+
+    const sampleJobs = [
+      sampleCanvasCell(page, source.layout, cell, 0.5, 0.5),
+      sampleCanvasCell(page, source.layout, neighbor, 0.5, 0.5),
+    ];
+    if (includeEdge) {
+      sampleJobs.splice(1, 0, sampleCanvasCell(page, source.layout, cell, 0.18, 0.18));
+    }
+    const samples = await Promise.all(sampleJobs);
+    const ghostFill = samples[0];
+    const ghostEdge = includeEdge ? samples[1] : null;
+    const emptyFill = samples[samples.length - 1];
+    contrasts.push(
+      includeEdge ? Math.max(colorDistance(ghostFill, emptyFill), colorDistance(ghostEdge, emptyFill)) : colorDistance(ghostFill, emptyFill)
+    );
+  }
+
+  if (contrasts.length === 0) {
+    throw new Error(`Unable to collect ${target} ghost contrast samples.`);
+  }
+
+  if (aggregate === "average") {
+    return contrasts.reduce((sum, value) => sum + value, 0) / contrasts.length;
+  }
+
+  return Math.max(...contrasts);
+}
+
 function attachConsoleCapture(page, consoleErrors) {
   page.on("console", (message) => {
     if (message.type() === "error") {
@@ -781,8 +928,30 @@ async function runThemeLoop(baseUrl, playwright) {
     await page.goto(`${baseUrl}?autostart=1&demo=1`, { waitUntil: "networkidle" });
     await page.waitForTimeout(140);
     assert((await getActiveThemeId(page)) === "classic", "Default theme should be classic");
-    assert((await getState()).mode === "playing", "Classic theme screenshot run should enter a playable game");
+    let state = await getState();
+    assert(state.mode === "playing", "Classic theme screenshot run should enter a playable game");
+    assert(state.settings?.ghostEnabled === true, "Classic theme run should keep ghost enabled");
+    assert(state.ghostY !== null, "Classic theme run should expose a landing ghost position");
+    const classicGhostContrast = await measureGhostContrast(page, state, "main");
+    assert(classicGhostContrast >= 16, `Classic theme ghost should remain visible, got contrast ${classicGhostContrast}`);
+    await page.screenshot({ path: path.join(screenshotDir, "ghost-visible-desktop.png"), fullPage: false });
     await page.screenshot({ path: path.join(screenshotDir, "theme-classic.png"), fullPage: false });
+
+    await page.locator("#settings-btn").click();
+    await page.waitForTimeout(60);
+    await page.locator("#ghost-toggle").uncheck();
+    await page.waitForTimeout(90);
+    state = await getState();
+    assert(state.settings?.ghostEnabled === false, "Ghost toggle should disable landing ghost rendering");
+    const hiddenGhostContrast = await measureGhostContrast(page, state, "main", { includeEdge: false, aggregate: "average" });
+    assert(hiddenGhostContrast <= 10, `Disabled ghost should not remain visible, got contrast ${hiddenGhostContrast}`);
+    await page.locator("#ghost-toggle").check();
+    await page.waitForTimeout(90);
+    state = await getState();
+    const restoredGhostContrast = await measureGhostContrast(page, state, "main");
+    assert(restoredGhostContrast >= 16, "Re-enabling ghost should restore landing ghost visibility");
+    await page.locator("#close-settings-btn").click();
+    await page.waitForTimeout(40);
 
     await page.goto(`${baseUrl}?menu=1`, { waitUntil: "networkidle" });
     await page.locator('[data-theme-card="ocean"]').click();
@@ -794,6 +963,7 @@ async function runThemeLoop(baseUrl, playwright) {
     assert((await getActiveThemeId(page)) === "ocean", "Selected theme should persist into gameplay");
     const oceanState = await getState();
     assert(oceanState.mode === "playing", "Ocean theme should keep the game playable");
+    assert((await measureGhostContrast(page, oceanState, "main")) >= 16, "Ocean theme ghost should remain visible");
     await page.screenshot({ path: path.join(screenshotDir, "theme-ocean.png"), fullPage: false });
 
     const beforeSettingsTheme = await getState();
@@ -809,6 +979,7 @@ async function runThemeLoop(baseUrl, playwright) {
         afterSettingsTheme.lines === beforeSettingsTheme.lines,
       "Theme switching in settings should not reset the running game"
     );
+    assert((await measureGhostContrast(page, afterSettingsTheme, "main")) >= 16, "Gem theme ghost should remain visible");
     await page.locator("#close-settings-btn").click();
     await page.waitForTimeout(40);
     await page.screenshot({ path: path.join(screenshotDir, "theme-gem.png"), fullPage: false });
@@ -888,7 +1059,13 @@ async function runMobileGestureLoop(baseUrl, playwright) {
       ],
       nextPointerId()
     );
-    await page.waitForTimeout(80);
+    await page.waitForFunction(
+      (expectedType) => {
+        const state = JSON.parse(window.render_game_to_text());
+        return state.holdPiece === expectedType;
+      },
+      beforeHold.activePiece.type
+    );
     const afterHold = await getState();
     assert(afterHold.holdPiece === beforeHold.activePiece.type, "Double tap should hold the active piece");
 
@@ -969,6 +1146,11 @@ async function runMobileGestureLoop(baseUrl, playwright) {
       afterOffAxisDrop.activePiece.type === beforeOffAxisDrop.activePiece.type,
       "A diagonal downward swipe should stay in soft drop and must not trigger hard drop"
     );
+    const mobileGhostState = await getState();
+    assert(mobileGhostState.ghostY !== null, "Mobile gameplay should expose a landing ghost position");
+    const mobileGhostContrast = await measureGhostContrast(page, mobileGhostState, "main");
+    assert(mobileGhostContrast >= 16, `Mobile gameplay should keep the landing ghost visible, got contrast ${mobileGhostContrast}`);
+    await page.screenshot({ path: path.join(screenshotDir, "ghost-visible-mobile.png"), fullPage: false });
 
     await page.locator("#pause-btn").click();
     const pausedState = await getState();
@@ -1458,6 +1640,12 @@ async function runSharingFlowLoop(baseUrl, playwright) {
       const state = JSON.parse(window.render_game_to_text());
       return state.mode === "playing" && state.gameMode === "ghost_race" && state.ghost?.duelMode === "ultra";
     });
+    state = await getState();
+    assert((await measureGhostContrast(page, state, "main")) >= 16, "Ghost duel should keep the main-board landing ghost visible");
+    assert(
+      (await measureGhostContrast(page, state, "ghost", { includeEdge: false, aggregate: "average" })) <= 10,
+      "Passive ghost board should not render a landing ghost"
+    );
 
     await page.goto(`${baseUrl}?menu=1&section=labs`, { waitUntil: "networkidle" });
     await page.locator("#launch-gravity-shift-btn").click();
