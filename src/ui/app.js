@@ -29,7 +29,22 @@ import {
   saveProfile,
 } from "../game/progress-storage.js";
 import { ReplayPlayer, ReplayRecorder, buildReplayClip, createRunId } from "../game/replay.js";
-import { loadSettings, saveSettings } from "../game/storage.js";
+import { loadRoomTokens, loadSettings, saveRoomTokens, saveSettings } from "../game/storage.js";
+import {
+  ROOM_CAPACITY,
+  ROOM_CODE_LENGTH,
+  ROOM_FILTER_IDS,
+  ROOM_MODE_IDS,
+  compareRoomResults,
+  evaluateRoomWinner,
+  getRoomModeLabel,
+  getRoomStatusCopy,
+  isRoomJoinable,
+  sanitizeRoomCode,
+  sanitizeRoomFilter,
+  sanitizeRoomMode,
+  summarizeRoomProgress,
+} from "../game/room-utils.js";
 import { getTheme, THEMES } from "../game/themes.js";
 
 function formatScore(value) {
@@ -161,13 +176,56 @@ function buildThemeChipsMarkup() {
 }
 
 function buildModeCardsMarkup() {
-  return PLAYABLE_PHASE_ONE_MODES.map((modeId) => {
+  return PLAYABLE_PHASE_ONE_MODES.filter((modeId) => modeId !== "ghost_race").map((modeId) => {
     const mode = GAME_MODES[modeId];
     return `
       <button type="button" class="theme-card mode-card" data-mode-card="${mode.id}" aria-pressed="false">
         <span class="theme-card-badge">${mode.name}</span>
         <strong>${mode.label}</strong>
         <span>${mode.description}</span>
+      </button>
+    `;
+  }).join("");
+}
+
+function buildMenuNavMarkup() {
+  return [
+    ["single", "单人"],
+    ["rooms", "房间对战"],
+    ["daily", "今日挑战"],
+    ["spectate", "观战回放"],
+    ["labs", "Labs"],
+  ]
+    .map(
+      ([sectionId, label]) => `
+        <button type="button" class="theme-chip menu-nav-chip" data-menu-section="${sectionId}" aria-pressed="false">
+          <span class="theme-chip-copy"><strong>${label}</strong></span>
+        </button>
+      `
+    )
+    .join("");
+}
+
+function buildRoomModeMarkup() {
+  return ROOM_MODE_IDS.map((modeId) => {
+    const mode = getModeDefinition(modeId);
+    return `
+      <button type="button" class="theme-chip ghost-config-chip" data-room-mode="${modeId}" aria-pressed="false">
+        <span class="theme-chip-copy">
+          <strong>${mode.name}</strong>
+          <span>${mode.label}</span>
+        </span>
+      </button>
+    `;
+  }).join("");
+}
+
+function buildRoomFilterMarkup() {
+  return ROOM_FILTER_IDS.map((filterId) => {
+    const label = filterId === "all" ? "全部" : getRoomModeLabel(filterId);
+    return `
+      <button type="button" class="theme-chip room-filter-chip" data-room-filter="${filterId}" aria-pressed="false">
+        <span class="theme-chip-copy"><strong>${label}</strong></span>
       </button>
     `;
   }).join("");
@@ -335,9 +393,10 @@ export class RussianBlockApp {
     this.profile = loadProfile();
     this.theme = getTheme(this.settings.themeId);
     this.query = new URLSearchParams(window.location.search);
+    this.isDevMode = this.query.get("dev") === "1";
     this.audio = new AudioManager({ muted: this.settings.muted });
     this.engine = new TetrisEngine({ bestScore: this.settings.bestScore });
-    this.apiClient = new RussianBlockApiClient(this.settings.apiBase);
+    this.apiClient = new RussianBlockApiClient(this.settings.devApiBase);
     this.manualTimeControl = typeof window.advanceTime === "function";
     this.installPrompt = null;
     this.lastTimestamp = 0;
@@ -359,8 +418,23 @@ export class RussianBlockApp {
     this.selectedGhostDuelMode = "sprint";
     this.selectedGhostSource = "local_best";
     this.ghostReplayCode = "";
-    this.selectedGameMode = sanitizeGameMode(this.settings.lastMode);
+    const persistedMode = sanitizeGameMode(this.settings.lastMode);
+    this.selectedGameMode = persistedMode === "ghost_race" ? "marathon" : persistedMode;
     this.selectedSeed = this.settings.lastSeed;
+    this.menuSection = ["single", "rooms", "daily", "spectate", "labs"].includes(this.query.get("section"))
+      ? this.query.get("section")
+      : "single";
+    this.selectedRoomMode = sanitizeRoomMode(this.selectedGameMode === "ultra" ? "ultra" : "sprint");
+    this.roomFilter = sanitizeRoomFilter(this.query.get("roomFilter"));
+    this.roomTokens = loadRoomTokens();
+    this.publicRooms = [];
+    this.publicRoomsStatus = "idle";
+    this.publicRoomsError = "";
+    this.activeRoom = null;
+    this.roomMatch = null;
+    this.roomResult = null;
+    this.roomPollTimer = 0;
+    this.lastRoomSubmissionRunId = "";
     this.statusMessage = "";
     this.activeRemoteSession = null;
     this.lastRemoteSubmission = null;
@@ -388,6 +462,7 @@ export class RussianBlockApp {
     this.shareCodeInput.value = this.query.get("code") ?? "";
     this.ghostReplayCode = this.query.get("code") ?? "";
     const hasSharedRoute =
+      (this.query.get("play") === "room" && Boolean(this.query.get("code"))) ||
       (this.query.get("play") === "challenge" && Boolean(this.query.get("code"))) ||
       (this.query.get("play") === "ghost" &&
         (Boolean(this.query.get("code")) || this.query.get("source") === "local-best")) ||
@@ -403,6 +478,9 @@ export class RussianBlockApp {
       }
     } else if (this.query.get("menu") !== "1" && this.settings.autoStartLastMode) {
       this.startGame({ gameMode: this.selectedGameMode, seed: this.selectedSeed });
+    }
+    if (!hasSharedRoute && this.apiClient.configured) {
+      void this.refreshPublicRooms();
     }
     this.updateUiState();
     this.resizeCanvas();
@@ -752,6 +830,245 @@ export class RussianBlockApp {
     this.leaderboardTitle = this.resultLeaderboard.querySelector("#leaderboard-title");
     this.leaderboardStatus = this.resultLeaderboard.querySelector("#leaderboard-status");
     this.leaderboardList = this.resultLeaderboard.querySelector("#leaderboard-list");
+    this.setupMenuSections();
+    this.setupRoomUi();
+  }
+
+  setupMenuSections() {
+    this.menuCard = this.menuOverlay.querySelector(".overlay-card");
+    const introParagraph = this.menuCard.querySelector("p");
+    this.menuNav = document.createElement("div");
+    this.menuNav.className = "menu-nav";
+    this.menuNav.innerHTML = buildMenuNavMarkup();
+    introParagraph.insertAdjacentElement("afterend", this.menuNav);
+    this.menuNavButtons = Array.from(this.menuNav.querySelectorAll("[data-menu-section]"));
+
+    this.menuSectionContainer = document.createElement("div");
+    this.menuSectionContainer.className = "menu-sections";
+    this.statusCopy.insertAdjacentElement("beforebegin", this.menuSectionContainer);
+
+    const modeShowcase = this.menuModeName.closest(".theme-showcase");
+    const modeCarousel = this.root.querySelector("#mode-carousel");
+    const startActions = this.root.querySelector("#start-btn").closest(".overlay-actions");
+    const themeShowcase = this.menuThemeName.closest(".theme-showcase");
+    const themeCarousel = this.root.querySelector("#theme-carousel");
+    const recentHistoryBlock = this.historyList.closest(".menu-history");
+    const shareHistoryBlock = this.shareCodeInput.closest(".menu-history");
+    const labsHistoryBlock = this.root.querySelector("#launch-gravity-shift-btn").closest(".menu-history");
+
+    this.singleMenuSection = document.createElement("section");
+    this.singleMenuSection.className = "menu-section";
+    this.singleMenuSection.dataset.menuSectionPane = "single";
+    [
+      modeShowcase,
+      modeCarousel,
+      this.seedField,
+      startActions,
+      themeShowcase,
+      themeCarousel,
+      this.menuSummary,
+      recentHistoryBlock,
+    ].forEach((node) => {
+      this.singleMenuSection.append(node);
+    });
+
+    this.dailyMenuSection = document.createElement("section");
+    this.dailyMenuSection.className = "menu-section";
+    this.dailyMenuSection.dataset.menuSectionPane = "daily";
+    this.dailyMenuSection.innerHTML = `
+      <div class="theme-showcase">
+        <span class="theme-showcase-label">Daily Challenge</span>
+        <strong>Same seed. Same clock. One clean target.</strong>
+        <p>Jump straight into today's fixed challenge and compare results after the run.</p>
+      </div>
+      <div class="overlay-actions"></div>
+      <div class="menu-history">
+        <div class="history-card history-card--lab">
+          <div class="history-row history-row--static">
+            <strong>Daily refreshes by your local date</strong>
+            <span>Open it from any device and you'll get the same challenge for that date.</span>
+          </div>
+        </div>
+      </div>
+    `;
+    this.dailyLaunchButton = this.root.querySelector("#load-daily-btn");
+    this.dailyLaunchButton.textContent = "Open Daily Challenge";
+    this.dailyMenuSection.querySelector(".overlay-actions").append(this.dailyLaunchButton);
+
+    this.spectateMenuSection = document.createElement("section");
+    this.spectateMenuSection.className = "menu-section";
+    this.spectateMenuSection.dataset.menuSectionPane = "spectate";
+    const shareHeadLabel = shareHistoryBlock.querySelector(".theme-showcase-label");
+    if (shareHeadLabel) {
+      shareHeadLabel.textContent = "Spectate / Advanced Share";
+    }
+    this.root.querySelector("#play-challenge-btn").textContent = "Open Challenge";
+    this.root.querySelector("#watch-shared-replay-btn").textContent = "Watch Replay";
+    shareHistoryBlock.querySelector("#load-daily-btn")?.remove();
+    this.spectateMenuSection.append(shareHistoryBlock);
+
+    this.labsMenuSection = document.createElement("section");
+    this.labsMenuSection.className = "menu-section";
+    this.labsMenuSection.dataset.menuSectionPane = "labs";
+    this.labsMenuSection.innerHTML = `
+      <div class="theme-showcase">
+        <span class="theme-showcase-label">Advanced</span>
+        <strong>Shadow challenges and unstable rules live here.</strong>
+        <p>Use replay spectate and result screens for the easier path. Labs stays optional.</p>
+      </div>
+    `;
+    this.shadowChallengeCard = document.createElement("div");
+    this.shadowChallengeCard.className = "menu-history";
+    this.shadowChallengeCard.innerHTML = `
+      <div class="history-card history-card--lab">
+        <div class="history-row history-row--static">
+          <strong>Shadow Challenge</strong>
+          <span>Race a saved Sprint or Ultra replay after your run instead of entering raw replay codes.</span>
+        </div>
+      </div>
+    `;
+    this.labsMenuSection.append(this.shadowChallengeCard, labsHistoryBlock);
+
+    this.menuSectionContainer.append(
+      this.singleMenuSection,
+      this.dailyMenuSection,
+      this.spectateMenuSection,
+      this.labsMenuSection
+    );
+
+    this.apiBaseField = this.apiBaseInput.closest(".settings-api");
+    this.settingsNote = this.root.querySelector(".settings-note");
+    if (this.apiBaseField) {
+      this.apiBaseField.hidden = !this.isDevMode;
+    }
+    if (this.settingsNote) {
+      this.settingsNote.textContent = this.isDevMode
+        ? "Theme, mode, nickname, ghost preference, and the optional dev API base are stored locally."
+        : "Theme, mode, nickname, and ghost preference are stored locally. Online rooms and sharing use the built-in service.";
+    }
+  }
+
+  setupRoomUi() {
+    this.roomsMenuSection = document.createElement("section");
+    this.roomsMenuSection.className = "menu-section";
+    this.roomsMenuSection.dataset.menuSectionPane = "rooms";
+    this.roomsMenuSection.innerHTML = `
+      <div class="theme-showcase">
+        <span class="theme-showcase-label">Room Match</span>
+        <strong>Use a 6-digit room code or join a public room.</strong>
+        <p>Create a same-seed room for Sprint 40L or Ultra 120s, then compare the final result after both runs finish.</p>
+      </div>
+      <div class="menu-history">
+        <div class="menu-history-head">
+          <span class="theme-showcase-label">Create Room</span>
+        </div>
+        <div class="settings-theme-grid ghost-config-grid" id="room-mode-grid">
+          ${buildRoomModeMarkup()}
+        </div>
+        <label class="toggle-row room-toggle-row">
+          <span>Show in public room list</span>
+          <input type="checkbox" id="room-public-toggle" />
+        </label>
+        <div class="overlay-actions">
+          <button type="button" class="primary-btn" id="room-create-btn">Create Room</button>
+        </div>
+      </div>
+      <div class="menu-history">
+        <div class="menu-history-head">
+          <span class="theme-showcase-label">Join With Code</span>
+        </div>
+        <label class="seed-field">
+          <span class="theme-showcase-label">6-digit room code</span>
+          <input type="text" id="room-code-input" inputmode="numeric" maxlength="${ROOM_CODE_LENGTH}" placeholder="482731" />
+        </label>
+        <div class="overlay-actions">
+          <button type="button" class="secondary-btn" id="room-join-btn">Join Room</button>
+          <button type="button" class="secondary-btn" id="room-refresh-btn">Refresh List</button>
+        </div>
+      </div>
+      <div class="menu-history menu-history--room room-lobby room-lobby--hidden" id="room-lobby">
+        <div class="menu-history-head">
+          <span class="theme-showcase-label">Current Room</span>
+          <span class="room-status-pill" id="room-status-pill">Waiting</span>
+        </div>
+        <div class="watch-panel-grid room-lobby-grid" id="room-lobby-grid"></div>
+        <div class="history-list" id="room-player-list"></div>
+        <div class="overlay-actions">
+          <button type="button" class="secondary-btn menu-mini-btn" id="room-copy-code-btn">Copy Code</button>
+          <button type="button" class="secondary-btn menu-mini-btn" id="room-copy-link-btn">Copy Invite</button>
+          <button type="button" class="secondary-btn menu-mini-btn" id="room-ready-btn">Ready</button>
+          <button type="button" class="primary-btn menu-mini-btn" id="room-start-btn">Start</button>
+          <button type="button" class="secondary-btn menu-mini-btn" id="room-leave-btn">Leave</button>
+        </div>
+        <div class="leaderboard-panel leaderboard-panel--hidden" id="room-result-panel">
+          <div class="leaderboard-panel-head">
+            <strong id="room-result-title">Room Result</strong>
+            <span id="room-result-status"></span>
+          </div>
+          <div class="leaderboard-list" id="room-result-list"></div>
+          <div class="overlay-actions room-result-actions">
+            <button type="button" class="secondary-btn menu-mini-btn" id="room-rematch-btn">Rematch</button>
+            <button type="button" class="secondary-btn menu-mini-btn" id="room-winner-ghost-btn">Challenge Winner</button>
+          </div>
+        </div>
+      </div>
+      <div class="menu-history">
+        <div class="menu-history-head">
+          <span class="theme-showcase-label">Public Rooms</span>
+          <button type="button" class="secondary-btn menu-mini-btn" id="room-refresh-list-btn">Refresh</button>
+        </div>
+        <div class="spectate-speed-group room-filter-group" id="room-filter-group">
+          ${buildRoomFilterMarkup()}
+        </div>
+        <div class="history-list" id="room-list"></div>
+      </div>
+    `;
+    this.menuSectionContainer.insertBefore(this.roomsMenuSection, this.dailyMenuSection);
+    this.roomModeButtons = Array.from(this.roomsMenuSection.querySelectorAll("[data-room-mode]"));
+    this.roomFilterButtons = Array.from(this.roomsMenuSection.querySelectorAll("[data-room-filter]"));
+    this.roomPublicToggle = this.roomsMenuSection.querySelector("#room-public-toggle");
+    this.roomCodeInput = this.roomsMenuSection.querySelector("#room-code-input");
+    this.roomCreateButton = this.roomsMenuSection.querySelector("#room-create-btn");
+    this.roomJoinButton = this.roomsMenuSection.querySelector("#room-join-btn");
+    this.roomRefreshButton = this.roomsMenuSection.querySelector("#room-refresh-btn");
+    this.roomRefreshListButton = this.roomsMenuSection.querySelector("#room-refresh-list-btn");
+    this.roomLobby = this.roomsMenuSection.querySelector("#room-lobby");
+    this.roomLobbyGrid = this.roomsMenuSection.querySelector("#room-lobby-grid");
+    this.roomPlayerList = this.roomsMenuSection.querySelector("#room-player-list");
+    this.roomStatusPill = this.roomsMenuSection.querySelector("#room-status-pill");
+    this.roomCopyCodeButton = this.roomsMenuSection.querySelector("#room-copy-code-btn");
+    this.roomCopyLinkButton = this.roomsMenuSection.querySelector("#room-copy-link-btn");
+    this.roomReadyButton = this.roomsMenuSection.querySelector("#room-ready-btn");
+    this.roomStartButton = this.roomsMenuSection.querySelector("#room-start-btn");
+    this.roomLeaveButton = this.roomsMenuSection.querySelector("#room-leave-btn");
+    this.roomList = this.roomsMenuSection.querySelector("#room-list");
+    this.roomResultPanel = this.roomsMenuSection.querySelector("#room-result-panel");
+    this.roomResultTitle = this.roomsMenuSection.querySelector("#room-result-title");
+    this.roomResultStatus = this.roomsMenuSection.querySelector("#room-result-status");
+    this.roomResultList = this.roomsMenuSection.querySelector("#room-result-list");
+    this.roomRematchButton = this.roomsMenuSection.querySelector("#room-rematch-btn");
+    this.roomWinnerGhostButton = this.roomsMenuSection.querySelector("#room-winner-ghost-btn");
+
+    this.roomBackButton = document.createElement("button");
+    this.roomBackButton.type = "button";
+    this.roomBackButton.className = "secondary-btn";
+    this.roomBackButton.id = "room-back-btn";
+    this.roomBackButton.textContent = "Back To Room";
+    this.viewReplayPageButton.insertAdjacentElement("afterend", this.roomBackButton);
+
+    this.roomReplayButton = document.createElement("button");
+    this.roomReplayButton.type = "button";
+    this.roomReplayButton.className = "secondary-btn";
+    this.roomReplayButton.id = "room-replay-btn";
+    this.roomReplayButton.textContent = "Room Rematch";
+    this.roomBackButton.insertAdjacentElement("afterend", this.roomReplayButton);
+
+    this.roomShadowButton = document.createElement("button");
+    this.roomShadowButton.type = "button";
+    this.roomShadowButton.className = "secondary-btn";
+    this.roomShadowButton.id = "room-shadow-btn";
+    this.roomShadowButton.textContent = "Winner Shadow";
+    this.roomReplayButton.insertAdjacentElement("afterend", this.roomShadowButton);
   }
 
   bindEvents() {
@@ -810,6 +1127,9 @@ export class RussianBlockApp {
     this.root.querySelectorAll("[data-mode-card]").forEach((button) => {
       button.addEventListener("click", () => this.setSelectedMode(button.dataset.modeCard));
     });
+    this.menuNavButtons.forEach((button) => {
+      button.addEventListener("click", () => this.setMenuSection(button.dataset.menuSection));
+    });
     this.ghostModeButtons.forEach((button) => {
       button.addEventListener("click", () => this.setGhostDuelMode(button.dataset.ghostDuelMode));
     });
@@ -861,12 +1181,36 @@ export class RussianBlockApp {
       this.persistSettings();
     });
     this.apiBaseInput.addEventListener("change", () => {
-      this.settings.apiBase = this.apiBaseInput.value.trim();
-      this.apiClient = new RussianBlockApiClient(this.settings.apiBase);
+      this.settings.devApiBase = this.apiBaseInput.value.trim();
+      this.apiClient = new RussianBlockApiClient(this.settings.devApiBase);
       this.persistSettings();
-      this.statusMessage = this.apiClient.configured ? "分享 API 已更新。" : "当前处于纯本地模式。";
+      this.statusMessage = this.apiClient.configured ? "Developer API endpoint updated." : "Using the built-in local/offline mode.";
       this.updateUiState();
     });
+
+    this.roomModeButtons.forEach((button) => {
+      button.addEventListener("click", () => this.setRoomMode(button.dataset.roomMode));
+    });
+    this.roomFilterButtons.forEach((button) => {
+      button.addEventListener("click", () => this.setRoomFilter(button.dataset.roomFilter));
+    });
+    this.roomCodeInput.addEventListener("input", () => {
+      this.roomCodeInput.value = sanitizeRoomCode(this.roomCodeInput.value);
+    });
+    this.roomCreateButton.addEventListener("click", () => void this.createRoom());
+    this.roomJoinButton.addEventListener("click", () => void this.joinRoomByCode(this.roomCodeInput.value));
+    this.roomRefreshButton.addEventListener("click", () => void this.refreshPublicRooms());
+    this.roomRefreshListButton.addEventListener("click", () => void this.refreshPublicRooms());
+    this.roomCopyCodeButton.addEventListener("click", () => void this.copyActiveRoomCode());
+    this.roomCopyLinkButton.addEventListener("click", () => void this.copyActiveRoomInvite());
+    this.roomReadyButton.addEventListener("click", () => void this.toggleActiveRoomReady());
+    this.roomStartButton.addEventListener("click", () => void this.startActiveRoomMatch());
+    this.roomLeaveButton.addEventListener("click", () => void this.leaveActiveRoom());
+    this.roomRematchButton.addEventListener("click", () => void this.requestRoomRematch());
+    this.roomWinnerGhostButton.addEventListener("click", () => void this.challengeRoomWinnerShadow());
+    this.roomBackButton.addEventListener("click", () => this.returnToRoomLobby());
+    this.roomReplayButton.addEventListener("click", () => void this.requestRoomRematch());
+    this.roomShadowButton.addEventListener("click", () => void this.challengeRoomWinnerShadow());
 
     this.installButton.addEventListener("click", async () => {
       if (!this.installPrompt) {
@@ -1479,6 +1823,54 @@ export class RussianBlockApp {
     saveProfile(this.profile);
     this.activeRecorder = null;
     void this.submitRunIfNeeded(this.lastRunSummary, replay);
+    void this.submitRoomRunIfNeeded(this.lastRunSummary, replay);
+  }
+
+  async submitRoomRunIfNeeded(runSummary, replay) {
+    if (!runSummary || !replay || !this.roomMatch || !this.activeRoom?.viewer || this.lastRoomSubmissionRunId === runSummary.id) {
+      return;
+    }
+    if (!this.apiClient.configured) {
+      return;
+    }
+
+    const roomCode = sanitizeRoomCode(this.roomMatch.code);
+    const playerToken = this.activeRoom.viewer.playerToken ?? this.getStoredRoomToken(roomCode);
+    if (!roomCode || !playerToken) {
+      return;
+    }
+
+    this.lastRoomSubmissionRunId = runSummary.id;
+
+    let replayCode = null;
+    try {
+      const replayShare = await this.ensureReplayShare(replay);
+      replayCode = replayShare.code;
+    } catch {
+      replayCode = null;
+    }
+
+    try {
+      const response = await this.apiClient.submitRoom(roomCode, {
+        playerToken,
+        nickname: this.getPlayerNickname("Player"),
+        replayCode,
+        summary: {
+          score: runSummary.score,
+          lines: runSummary.lines,
+          durationMs: runSummary.durationMs,
+          completed: runSummary.outcome === "completed",
+          resultReason: runSummary.reason,
+          mode: runSummary.outcome,
+        },
+      });
+      this.setActiveRoom(response.room, playerToken);
+      this.statusMessage = `Room ${roomCode} result submitted.`;
+      await this.refreshPublicRooms();
+    } catch (error) {
+      this.statusMessage = error instanceof Error ? error.message : "Failed to submit the room result.";
+      this.updateUiState();
+    }
   }
 
   async submitRunIfNeeded(runSummary, replay) {
@@ -1771,7 +2163,7 @@ export class RussianBlockApp {
       return false;
     }
     if (!this.apiClient.configured) {
-      this.statusMessage = "Configure API Base first.";
+      this.statusMessage = "Online sharing is unavailable right now.";
       this.updateUiState();
       return false;
     }
@@ -1886,7 +2278,7 @@ export class RussianBlockApp {
       return null;
     }
     if (!this.apiClient.configured) {
-      this.statusMessage = "Configure API Base first.";
+      this.statusMessage = "Online sharing is unavailable right now.";
       this.updateUiState();
       return null;
     }
@@ -2281,7 +2673,7 @@ export class RussianBlockApp {
       return null;
     }
     if (!this.apiClient.configured) {
-      this.statusMessage = "Configure API Base first.";
+      this.statusMessage = "Online sharing is unavailable right now.";
       this.updateUiState();
       return null;
     }
@@ -2324,7 +2716,7 @@ export class RussianBlockApp {
       return;
     }
     if (!this.apiClient.configured) {
-      this.statusMessage = "请先在设置里配置 API Base。";
+      this.statusMessage = "Online challenge sharing is unavailable right now.";
       this.updateUiState();
       return;
     }
@@ -2475,7 +2867,9 @@ export class RussianBlockApp {
     const code = this.query.get("code") ?? "";
     const playMode = this.query.get("play");
     const watchMode = this.query.get("watch");
-    if (playMode === "challenge" && code) {
+    if (playMode === "room" && code) {
+      await this.openRoomRoute(code);
+    } else if (playMode === "challenge" && code) {
       await this.openChallengeFromCode(code);
     } else if (playMode === "ghost" && code) {
       await this.openGhostRaceFromCode(code);
@@ -2553,6 +2947,550 @@ export class RussianBlockApp {
           sourceType: "local_recent",
           sourceLabel: "Recent Replay",
         });
+      });
+    });
+  }
+
+  setMenuSection(sectionId) {
+    const nextSection = ["single", "rooms", "daily", "spectate", "labs"].includes(sectionId) ? sectionId : "single";
+    this.menuSection = nextSection;
+    this.updateUiState();
+  }
+
+  setRoomMode(modeId) {
+    this.selectedRoomMode = sanitizeRoomMode(modeId);
+    this.updateUiState();
+  }
+
+  setRoomFilter(filterId) {
+    this.roomFilter = sanitizeRoomFilter(filterId);
+    this.updateUiState();
+    void this.refreshPublicRooms();
+  }
+
+  getPlayerNickname(fallback = "Anonymous") {
+    const nickname = String(this.settings.nickname ?? "").trim().slice(0, 24);
+    return nickname || fallback;
+  }
+
+  getRoomInviteUrl(code) {
+    return `${window.location.origin}${window.location.pathname}?play=room&code=${encodeURIComponent(code)}`;
+  }
+
+  getStoredRoomToken(code) {
+    return this.roomTokens[sanitizeRoomCode(code)] ?? "";
+  }
+
+  rememberRoomToken(code, token) {
+    const normalizedCode = sanitizeRoomCode(code);
+    const normalizedToken = String(token ?? "").trim();
+    if (!normalizedCode || !normalizedToken) {
+      return;
+    }
+    this.roomTokens = {
+      ...this.roomTokens,
+      [normalizedCode]: normalizedToken,
+    };
+    saveRoomTokens(this.roomTokens);
+  }
+
+  forgetRoomToken(code) {
+    const normalizedCode = sanitizeRoomCode(code);
+    if (!normalizedCode || !Object.hasOwn(this.roomTokens, normalizedCode)) {
+      return;
+    }
+    const nextTokens = { ...this.roomTokens };
+    delete nextTokens[normalizedCode];
+    this.roomTokens = nextTokens;
+    saveRoomTokens(this.roomTokens);
+  }
+
+  stopRoomPolling() {
+    if (this.roomPollTimer) {
+      window.clearTimeout(this.roomPollTimer);
+      this.roomPollTimer = 0;
+    }
+  }
+
+  scheduleRoomPoll(delayMs = 2600) {
+    this.stopRoomPolling();
+    if (!this.activeRoom || !this.apiClient.configured) {
+      return;
+    }
+    this.roomPollTimer = window.setTimeout(() => {
+      void this.pollActiveRoom();
+    }, delayMs);
+  }
+
+  async pollActiveRoom() {
+    if (!this.activeRoom || !this.apiClient.configured) {
+      return;
+    }
+
+    const roomCode = sanitizeRoomCode(this.activeRoom.code);
+    const playerToken = this.getStoredRoomToken(roomCode);
+    try {
+      const response = await this.apiClient.getRoom(roomCode, {
+        playerToken: playerToken || undefined,
+      });
+      this.setActiveRoom(response.room, playerToken || response.room?.viewer?.playerToken);
+    } catch (error) {
+      this.statusMessage = error instanceof Error ? error.message : "Failed to refresh the room.";
+      this.updateUiState();
+    } finally {
+      if (this.activeRoom) {
+        this.scheduleRoomPoll(this.engine.mode === "playing" ? 3200 : 2600);
+      }
+    }
+  }
+
+  clearRoomState({ keepTokens = true } = {}) {
+    if (!keepTokens && this.activeRoom?.code) {
+      this.forgetRoomToken(this.activeRoom.code);
+    }
+    this.stopRoomPolling();
+    this.activeRoom = null;
+    this.roomMatch = null;
+    this.roomResult = null;
+    this.lastRoomSubmissionRunId = "";
+  }
+
+  setActiveRoom(room, playerToken = null) {
+    if (!room) {
+      this.clearRoomState();
+      this.updateUiState();
+      return;
+    }
+
+    const normalizedCode = sanitizeRoomCode(room.code);
+    const effectiveToken = String(playerToken || room.viewer?.playerToken || this.getStoredRoomToken(normalizedCode) || "").trim();
+    if (effectiveToken) {
+      this.rememberRoomToken(normalizedCode, effectiveToken);
+    }
+    this.activeRoom = room;
+    if (room.status === "finished") {
+      this.roomResult = room;
+    } else if (!this.roomMatch || this.roomMatch.code !== normalizedCode || this.roomMatch.roundNumber !== Number(room.roundNumber)) {
+      this.roomResult = null;
+    }
+
+    if (room.viewer?.playerToken && room.status === "playing") {
+      const needsLaunch =
+        !this.roomMatch ||
+        this.roomMatch.code !== normalizedCode ||
+        this.roomMatch.roundNumber !== Number(room.roundNumber) ||
+        this.roomMatch.seed !== room.seed;
+      if (needsLaunch) {
+        this.launchRoomMatch(room);
+        return;
+      }
+    }
+
+    if (this.roomMatch && (this.roomMatch.code !== normalizedCode || this.roomMatch.roundNumber !== Number(room.roundNumber))) {
+      this.roomMatch = null;
+    }
+
+    this.scheduleRoomPoll();
+    this.updateUiState();
+  }
+
+  launchRoomMatch(room) {
+    if (!room?.viewer) {
+      return;
+    }
+
+    this.roomMatch = {
+      code: sanitizeRoomCode(room.code),
+      roundNumber: Number(room.roundNumber) || 1,
+      mode: sanitizeRoomMode(room.mode),
+      seed: room.seed,
+      playerSlot: Number(room.viewer.slot) || null,
+      playerToken: room.viewer.playerToken ?? this.getStoredRoomToken(room.code),
+    };
+    this.roomResult = null;
+    this.lastRoomSubmissionRunId = "";
+    this.setMenuSection("rooms");
+    this.startGame({
+      gameMode: this.roomMatch.mode,
+      seed: this.roomMatch.seed,
+    });
+    this.scheduleRoomPoll(3200);
+    this.statusMessage = `Room ${room.code} started.`;
+    this.updateUiState();
+  }
+
+  async refreshPublicRooms() {
+    if (!this.apiClient.configured) {
+      this.publicRooms = [];
+      this.publicRoomsStatus = "error";
+      this.publicRoomsError = "Online rooms are unavailable right now.";
+      this.updateUiState();
+      return;
+    }
+
+    this.publicRoomsStatus = "loading";
+    this.publicRoomsError = "";
+    this.updateUiState();
+
+    try {
+      const response = await this.apiClient.getPublicRooms({
+        filter: this.roomFilter,
+      });
+      this.publicRooms = Array.isArray(response.rooms) ? response.rooms : [];
+      this.publicRoomsStatus = "ready";
+    } catch (error) {
+      this.publicRooms = [];
+      this.publicRoomsStatus = "error";
+      this.publicRoomsError = error instanceof Error ? error.message : "Failed to load rooms.";
+    }
+
+    this.updateUiState();
+  }
+
+  async createRoom() {
+    if (!this.apiClient.configured) {
+      this.statusMessage = "Online rooms are unavailable right now.";
+      this.updateUiState();
+      return;
+    }
+
+    try {
+      const response = await this.apiClient.createRoom({
+        mode: this.selectedRoomMode,
+        isPublic: this.roomPublicToggle.checked,
+        nickname: this.getPlayerNickname("Host"),
+      });
+      this.roomCodeInput.value = sanitizeRoomCode(response.room?.code);
+      this.setMenuSection("rooms");
+      this.setActiveRoom(response.room, response.playerToken);
+      this.statusMessage = `Room ${response.room.code} created.`;
+      await this.refreshPublicRooms();
+    } catch (error) {
+      this.statusMessage = error instanceof Error ? error.message : "Failed to create the room.";
+      this.updateUiState();
+    }
+  }
+
+  async joinRoomByCode(code, { silent = false } = {}) {
+    const normalizedCode = sanitizeRoomCode(code);
+    this.roomCodeInput.value = normalizedCode;
+    if (normalizedCode.length !== ROOM_CODE_LENGTH) {
+      if (!silent) {
+        this.statusMessage = "Enter a valid 6-digit room code.";
+        this.updateUiState();
+      }
+      return false;
+    }
+    if (!this.apiClient.configured) {
+      this.statusMessage = "Online rooms are unavailable right now.";
+      this.updateUiState();
+      return false;
+    }
+
+    const playerToken = this.getStoredRoomToken(normalizedCode);
+    try {
+      const response = await this.apiClient.joinRoom(normalizedCode, {
+        nickname: this.getPlayerNickname(playerToken ? "Player" : "Guest"),
+        playerToken: playerToken || undefined,
+      });
+      this.setMenuSection("rooms");
+      this.setActiveRoom(response.room, response.playerToken);
+      this.statusMessage = `Joined room ${normalizedCode}.`;
+      await this.refreshPublicRooms();
+      return true;
+    } catch (error) {
+      if (!silent) {
+        this.statusMessage = error instanceof Error ? error.message : "Failed to join the room.";
+        this.updateUiState();
+      }
+      return false;
+    }
+  }
+
+  async openRoomRoute(code) {
+    const normalizedCode = sanitizeRoomCode(code);
+    this.setMenuSection("rooms");
+    if (!normalizedCode) {
+      this.statusMessage = "Missing room code.";
+      this.updateUiState();
+      return;
+    }
+
+    const joined = await this.joinRoomByCode(normalizedCode, { silent: true });
+    if (joined) {
+      return;
+    }
+
+    if (!this.apiClient.configured) {
+      this.statusMessage = "Online rooms are unavailable right now.";
+      this.updateUiState();
+      return;
+    }
+
+    try {
+      const response = await this.apiClient.getRoom(normalizedCode, {
+        playerToken: this.getStoredRoomToken(normalizedCode) || undefined,
+      });
+      this.setActiveRoom(response.room, response.room?.viewer?.playerToken ?? this.getStoredRoomToken(normalizedCode));
+      this.statusMessage = `Room ${normalizedCode} loaded.`;
+    } catch (error) {
+      this.statusMessage = error instanceof Error ? error.message : "Failed to load the room.";
+      this.updateUiState();
+    }
+  }
+
+  async leaveActiveRoom() {
+    if (!this.activeRoom?.code) {
+      return;
+    }
+    const roomCode = sanitizeRoomCode(this.activeRoom.code);
+    const playerToken = this.getStoredRoomToken(roomCode);
+    if (!playerToken || !this.apiClient.configured) {
+      this.clearRoomState({ keepTokens: false });
+      this.statusMessage = "";
+      this.updateUiState();
+      return;
+    }
+
+    try {
+      const response = await this.apiClient.leaveRoom(roomCode, { playerToken });
+      this.forgetRoomToken(roomCode);
+      if (response.room) {
+        this.activeRoom = response.room;
+      }
+      this.clearRoomState();
+      this.statusMessage = `Left room ${roomCode}.`;
+      await this.refreshPublicRooms();
+      this.updateUiState();
+    } catch (error) {
+      this.statusMessage = error instanceof Error ? error.message : "Failed to leave the room.";
+      this.updateUiState();
+    }
+  }
+
+  async toggleActiveRoomReady() {
+    if (!this.activeRoom?.code || !this.activeRoom.viewer) {
+      return;
+    }
+    try {
+      const response = await this.apiClient.updateRoomStart(this.activeRoom.code, {
+        playerToken: this.activeRoom.viewer.playerToken ?? this.getStoredRoomToken(this.activeRoom.code),
+        action: "ready",
+        ready: !this.activeRoom.viewer.ready,
+      });
+      this.setActiveRoom(response.room);
+    } catch (error) {
+      this.statusMessage = error instanceof Error ? error.message : "Failed to update ready state.";
+      this.updateUiState();
+    }
+  }
+
+  async startActiveRoomMatch() {
+    if (!this.activeRoom?.code || !this.activeRoom.viewer?.isHost) {
+      return;
+    }
+    try {
+      const response = await this.apiClient.updateRoomStart(this.activeRoom.code, {
+        playerToken: this.activeRoom.viewer.playerToken ?? this.getStoredRoomToken(this.activeRoom.code),
+        action: "start",
+      });
+      this.setActiveRoom(response.room);
+    } catch (error) {
+      this.statusMessage = error instanceof Error ? error.message : "Failed to start the room.";
+      this.updateUiState();
+    }
+  }
+
+  async requestRoomRematch() {
+    if (!this.activeRoom?.code || !this.activeRoom.viewer) {
+      return;
+    }
+    try {
+      const response = await this.apiClient.rematchRoom(this.activeRoom.code, {
+        playerToken: this.activeRoom.viewer.playerToken ?? this.getStoredRoomToken(this.activeRoom.code),
+      });
+      this.roomResult = null;
+      this.lastRoomSubmissionRunId = "";
+      this.setActiveRoom(response.room);
+      this.statusMessage = `Room ${this.activeRoom.code} is ready for a rematch.`;
+      await this.refreshPublicRooms();
+    } catch (error) {
+      this.statusMessage = error instanceof Error ? error.message : "Failed to create a rematch.";
+      this.updateUiState();
+    }
+  }
+
+  returnToRoomLobby() {
+    this.returnToMenu();
+    if (this.activeRoom) {
+      this.setMenuSection("rooms");
+      this.statusMessage = `Back in room ${this.activeRoom.code}.`;
+      this.updateUiState();
+    }
+  }
+
+  async copyActiveRoomCode() {
+    if (!this.activeRoom?.code) {
+      return;
+    }
+    await this.copyTextToClipboard(this.activeRoom.code);
+    this.statusMessage = `Room code ${this.activeRoom.code} copied.`;
+    this.updateUiState();
+  }
+
+  async copyActiveRoomInvite() {
+    if (!this.activeRoom?.code) {
+      return;
+    }
+    await this.copyTextToClipboard(this.getRoomInviteUrl(this.activeRoom.code));
+    this.statusMessage = `Invite link for room ${this.activeRoom.code} copied.`;
+    this.updateUiState();
+  }
+
+  async challengeRoomWinnerShadow() {
+    const room = this.roomResult ?? this.activeRoom;
+    if (!room?.results?.length) {
+      return;
+    }
+    const winner = evaluateRoomWinner(room.mode, room.results);
+    const winnerReplayCode = winner?.ordered?.[0]?.replayCode ?? null;
+    if (!winnerReplayCode) {
+      this.statusMessage = "The winning run does not have a saved replay yet.";
+      this.updateUiState();
+      return;
+    }
+    await this.openGhostRaceFromCode(winnerReplayCode);
+  }
+
+  renderRoomLobbyUi() {
+    const room = this.activeRoom;
+    this.roomLobby.classList.toggle("room-lobby--hidden", !room);
+    if (!room) {
+      this.roomLobbyGrid.innerHTML = "";
+      this.roomPlayerList.innerHTML = "";
+      this.roomStatusPill.textContent = "Waiting";
+      this.roomResultPanel.classList.add("leaderboard-panel--hidden");
+      return;
+    }
+
+    const viewer = room.viewer ?? null;
+    const winner = evaluateRoomWinner(room.mode, room.results ?? []);
+    const winnerEntry = winner?.ordered?.[0] ?? null;
+    const canUseWinnerGhost = Boolean(winnerEntry?.replayCode);
+    const allReady = Array.isArray(room.players) && room.players.length === ROOM_CAPACITY && room.players.every((player) => player.ready);
+
+    this.roomStatusPill.textContent = getRoomStatusCopy(room);
+    this.roomLobbyGrid.innerHTML = `
+      <div class="watch-panel-chip"><strong>${safeText(room.code)}</strong><span>Code</span></div>
+      <div class="watch-panel-chip"><strong>${safeText(getRoomModeLabel(room.mode))}</strong><span>Mode</span></div>
+      <div class="watch-panel-chip"><strong>${safeText(summarizeRoomProgress(room))}</strong><span>Status</span></div>
+      <div class="watch-panel-chip"><strong>${safeText(room.seed || "AUTO")}</strong><span>Seed</span></div>
+    `;
+    this.roomPlayerList.innerHTML = (room.players ?? [])
+      .map((player) => {
+        const labels = [];
+        if (player.isHost) {
+          labels.push("Host");
+        }
+        if (player.ready) {
+          labels.push("Ready");
+        }
+        if (viewer?.slot === player.slot) {
+          labels.push("You");
+        }
+        return `
+          <div class="leaderboard-row${viewer?.slot === player.slot ? " leaderboard-row--active" : ""}">
+            <span class="leaderboard-rank">#${player.slot}</span>
+            <div class="leaderboard-copy">
+              <strong>${safeText(player.nickname)}</strong>
+              <span>${safeText(labels.join(" · ") || "Joined")}</span>
+            </div>
+            <span class="leaderboard-score">${player.ready ? "OK" : "--"}</span>
+          </div>
+        `;
+      })
+      .join("");
+
+    this.roomCopyCodeButton.disabled = false;
+    this.roomCopyLinkButton.disabled = false;
+    this.roomReadyButton.disabled = !viewer || room.expired || room.status === "finished" || room.status === "playing";
+    this.roomReadyButton.textContent = viewer?.ready ? "Unready" : "Ready";
+    this.roomStartButton.hidden = !viewer?.isHost;
+    this.roomStartButton.disabled = !viewer?.isHost || !allReady || room.status === "playing" || room.status === "finished";
+    this.roomLeaveButton.disabled = !viewer;
+
+    const showResult = room.status === "finished" && Array.isArray(room.results) && room.results.length > 0;
+    this.roomResultPanel.classList.toggle("leaderboard-panel--hidden", !showResult);
+    if (showResult) {
+      const viewerWon = winner?.winnerSlot !== null && winner?.winnerSlot === viewer?.slot;
+      this.roomResultTitle.textContent =
+        winner?.winnerSlot === null ? "Round Draw" : viewerWon ? "You Won The Room" : "Room Finished";
+      this.roomResultStatus.textContent = `Round ${room.roundNumber}`;
+      this.roomResultList.innerHTML = (winner?.ordered ?? room.results)
+        .map((entry, index) => `
+          <div class="leaderboard-row${viewer?.slot === entry.slot ? " leaderboard-row--active" : ""}">
+            <span class="leaderboard-rank">#${index + 1}</span>
+            <div class="leaderboard-copy">
+              <strong>${safeText(entry.nickname)}</strong>
+              <span>${entry.lines} lines · ${formatDuration(entry.durationMs)}</span>
+            </div>
+            <span class="leaderboard-score">${formatScore(entry.score)}</span>
+          </div>
+        `)
+        .join("");
+    } else {
+      this.roomResultTitle.textContent = "Room Result";
+      this.roomResultStatus.textContent = "";
+      this.roomResultList.innerHTML = "";
+    }
+
+    this.roomRematchButton.disabled = !viewer || room.expired || room.status !== "finished";
+    this.roomWinnerGhostButton.disabled = !canUseWinnerGhost;
+  }
+
+  renderPublicRoomListUi() {
+    this.roomModeButtons.forEach((button) => {
+      button.setAttribute("aria-pressed", String(button.dataset.roomMode === this.selectedRoomMode));
+    });
+    this.roomFilterButtons.forEach((button) => {
+      button.setAttribute("aria-pressed", String(button.dataset.roomFilter === this.roomFilter));
+    });
+
+    if (!this.apiClient.configured) {
+      this.roomList.innerHTML = `<div class="history-empty">Online rooms are unavailable right now.</div>`;
+      return;
+    }
+    if (this.publicRoomsStatus === "loading" && this.publicRooms.length === 0) {
+      this.roomList.innerHTML = `<div class="history-empty">Refreshing public rooms…</div>`;
+      return;
+    }
+    if (this.publicRoomsStatus === "error") {
+      this.roomList.innerHTML = `<div class="history-empty">${safeText(this.publicRoomsError || "Failed to load rooms.")}</div>`;
+      return;
+    }
+    if (this.publicRooms.length === 0) {
+      this.roomList.innerHTML = `<div class="history-empty">No open public rooms yet. Create one and share the 6-digit code.</div>`;
+      return;
+    }
+
+    this.roomList.innerHTML = this.publicRooms
+      .map((room) => `
+        <div class="history-card">
+          <button type="button" class="history-row" data-public-room="${room.code}">
+            <strong>${safeText(room.code)} · ${safeText(getRoomModeLabel(room.mode))}</strong>
+            <span>${safeText(summarizeRoomProgress(room))} · ${safeText((room.players ?? []).map((player) => player.nickname).join(" / "))}</span>
+          </button>
+          <button type="button" class="secondary-btn menu-mini-btn" data-public-room-join="${room.code}" ${isRoomJoinable(room) ? "" : "disabled"}>
+            Join
+          </button>
+        </div>
+      `)
+      .join("");
+
+    this.roomList.querySelectorAll("[data-public-room], [data-public-room-join]").forEach((button) => {
+      button.addEventListener("click", () => {
+        const code = button.dataset.publicRoom ?? button.dataset.publicRoomJoin;
+        void this.joinRoomByCode(code);
       });
     });
   }
@@ -3020,12 +3958,18 @@ export class RussianBlockApp {
     if (this.replayPlayer) {
       this.stopReplay();
     }
+    if (this.roomMatch && this.activeRoom?.status === "playing") {
+      this.statusMessage = "Room matches can't restart mid-round. Finish this seed or use rematch.";
+      this.updateUiState();
+      return;
+    }
     this.audio.unlock();
     this.toggleSettings(false);
     this.clearPendingTouchTap();
     this.releaseGestureInput();
     this.statusMessage = "";
     this.lastRemoteSubmission = null;
+    this.lastRoomSubmissionRunId = "";
     this.engine.restart();
     this.beginRecordingSession();
     if (this.ghostSession?.replay) {
@@ -3061,6 +4005,9 @@ export class RussianBlockApp {
     this.setRemoteSession(null);
     this.clearGhostSession({ preserveLastResult: true });
     this.engine.resetToMenu();
+    if (this.activeRoom) {
+      this.menuSection = "rooms";
+    }
     this.audio.play("click");
     this.afterStateChange();
   }
@@ -3198,6 +4145,31 @@ export class RussianBlockApp {
       };
     }
 
+    if (this.activeRoom) {
+      state.room = {
+        code: this.activeRoom.code,
+        status: this.activeRoom.status,
+        mode: this.activeRoom.mode,
+        roundNumber: this.activeRoom.roundNumber,
+        seed: this.activeRoom.seed,
+        viewer: this.activeRoom.viewer
+          ? {
+              slot: this.activeRoom.viewer.slot,
+              ready: this.activeRoom.viewer.ready,
+              isHost: this.activeRoom.viewer.isHost,
+            }
+          : null,
+        players: Array.isArray(this.activeRoom.players)
+          ? this.activeRoom.players.map((player) => ({
+              slot: player.slot,
+              nickname: player.nickname,
+              ready: player.ready,
+              isHost: player.isHost,
+            }))
+          : [],
+      };
+    }
+
     return state;
   }
 
@@ -3275,7 +4247,10 @@ export class RussianBlockApp {
     this.autostartToggle.checked = this.settings.autoStartLastMode;
     this.ghostToggle.checked = this.settings.ghostEnabled;
     this.nicknameInput.value = this.settings.nickname ?? "";
-    this.apiBaseInput.value = this.settings.apiBase ?? "";
+    this.apiBaseInput.value = this.settings.devApiBase ?? "";
+    if (this.apiBaseField) {
+      this.apiBaseField.hidden = !this.isDevMode;
+    }
     const isSpectating = Boolean(this.replayPlayer);
     this.topActions.hidden = isSpectating;
     this.menuOverlay.classList.toggle("overlay--hidden", isSpectating || this.engine.mode !== "menu");
@@ -3295,6 +4270,14 @@ export class RussianBlockApp {
     this.ghostSessionPanel.classList.toggle("ghost-session-panel--hidden", !ghostHud);
     this.updateModeUi();
     this.renderHistory();
+    this.renderRoomLobbyUi();
+    this.renderPublicRoomListUi();
+    this.menuNavButtons.forEach((button) => {
+      button.setAttribute("aria-pressed", String(button.dataset.menuSection === this.menuSection));
+    });
+    this.menuSectionContainer.querySelectorAll("[data-menu-section-pane]").forEach((section) => {
+      section.classList.toggle("menu-section--active", section.dataset.menuSectionPane === this.menuSection);
+    });
 
     if (sessionContext) {
       const goalCopy = this.formatGoalCopy(sessionContext.goal);
@@ -3411,10 +4394,19 @@ export class RussianBlockApp {
     const leaderboardContext = latestSubmission?.context ?? this.activeRemoteSession;
     const goalEvaluation = latestRun ? this.evaluateRemoteGoal(leaderboardContext, latestRun) : null;
     const ghostResult = latestRun?.gameMode === "ghost_race" ? latestRun.ghostResult ?? this.lastGhostResult : null;
+    const finishedRoom = this.roomResult?.status === "finished" ? this.roomResult : null;
+    const finishedRoomOutcome = finishedRoom ? evaluateRoomWinner(finishedRoom.mode, finishedRoom.results ?? []) : null;
+    const finishedRoomViewerSlot = finishedRoom?.viewer?.slot ?? this.roomMatch?.playerSlot ?? null;
     if (this.engine.mode === "completed") {
       this.resultEyebrow.textContent = "Completed";
       this.resultTitle.textContent =
-        latestRun?.gameMode === "ghost_race"
+        finishedRoom
+          ? finishedRoomOutcome?.winnerSlot === null
+            ? "Room Draw"
+            : finishedRoomOutcome?.winnerSlot === finishedRoomViewerSlot
+              ? "Room Win"
+              : "Room Loss"
+          : latestRun?.gameMode === "ghost_race"
           ? ghostResult?.outcome === "win"
             ? "Ghost Duel Won"
             : ghostResult?.outcome === "lose"
@@ -3426,7 +4418,13 @@ export class RussianBlockApp {
     } else {
       this.resultEyebrow.textContent = "Game Over";
       this.resultTitle.textContent =
-        latestRun?.gameMode === "ghost_race" && ghostResult
+        finishedRoom
+          ? finishedRoomOutcome?.winnerSlot === null
+            ? "Room Draw"
+            : finishedRoomOutcome?.winnerSlot === finishedRoomViewerSlot
+              ? "Room Win"
+              : "Room Loss"
+          : latestRun?.gameMode === "ghost_race" && ghostResult
           ? ghostResult.outcome === "win"
             ? "Ghost Duel Won"
             : ghostResult.outcome === "lose"
@@ -3467,6 +4465,21 @@ export class RussianBlockApp {
             ghostResult.ghostValue
           )}`
         )}</strong><span>Finish</span></div>
+      `;
+    }
+    if (finishedRoom) {
+      const winnerReplayCode = finishedRoomOutcome?.ordered?.[0]?.replayCode ?? null;
+      this.resultGrid.innerHTML += `
+        <div class="result-chip"><strong>${safeText(finishedRoom.code)}</strong><span>Room Code</span></div>
+        <div class="result-chip"><strong>${safeText(getRoomModeLabel(finishedRoom.mode))}</strong><span>Room Match</span></div>
+        <div class="result-chip"><strong>${safeText(
+          finishedRoomOutcome?.winnerSlot === null
+            ? "Draw"
+            : finishedRoomOutcome?.winnerSlot === finishedRoomViewerSlot
+              ? "You won"
+              : "You lost"
+        )}</strong><span>Outcome</span></div>
+        <div class="result-chip"><strong>${safeText(winnerReplayCode || "No replay")}</strong><span>Winner Shadow</span></div>
       `;
     }
     if (latestSubmission) {
@@ -3556,6 +4569,12 @@ export class RussianBlockApp {
     ghostRunButton.disabled = !canRaceLatestRun;
     ghostRunButton.title = canRaceLatestRun ? "" : "Ghost Duel only supports Sprint / Ultra";
     highlightShareButton.disabled = !this.lastReplay || !this.apiClient.configured;
+    const roomActionsVisible = Boolean(finishedRoom);
+    this.roomBackButton.hidden = !roomActionsVisible;
+    this.roomReplayButton.hidden = !roomActionsVisible;
+    this.roomShadowButton.hidden = !roomActionsVisible;
+    this.roomReplayButton.disabled = !finishedRoom?.viewer || finishedRoom?.expired;
+    this.roomShadowButton.disabled = !Boolean(finishedRoomOutcome?.ordered?.[0]?.replayCode);
     this.statusCopy.textContent =
       this.statusMessage ||
       `当前模式最佳 ${formatScore(getBestScoreForMode(this.profile, this.selectedGameMode))} 分。`;

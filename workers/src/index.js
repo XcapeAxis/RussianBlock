@@ -1,3 +1,7 @@
+const ROOM_MODE_IDS = ["sprint", "ultra"];
+const ROOM_CAPACITY = 2;
+const ROOM_EXPIRY_MS = 6 * 60 * 60 * 1000;
+
 function json(data, init = {}) {
   return new Response(JSON.stringify(data), {
     ...init,
@@ -15,8 +19,21 @@ function randomCode(prefix = "") {
   return `${prefix}${Math.random().toString(36).slice(2, 8)}`.toUpperCase();
 }
 
-async function readJson(request) {
-  return request.json().catch(() => ({}));
+function randomRoomCode() {
+  return String(100000 + Math.floor(Math.random() * 900000));
+}
+
+function nowIso() {
+  return new Date().toISOString();
+}
+
+function sanitizeRoomMode(modeId) {
+  return ROOM_MODE_IDS.includes(modeId) ? modeId : ROOM_MODE_IDS[0];
+}
+
+function normalizeNickname(value, fallback = "Player") {
+  const nickname = String(value ?? "").trim().slice(0, 24);
+  return nickname || fallback;
 }
 
 function normalizeReplaySummary(replay) {
@@ -29,10 +46,250 @@ function normalizeReplaySummary(replay) {
   };
 }
 
+async function readJson(request) {
+  return request.json().catch(() => ({}));
+}
+
+function toTimestamp(value) {
+  const timestamp = Date.parse(value ?? "");
+  return Number.isFinite(timestamp) ? timestamp : 0;
+}
+
+function buildRoomSeed(code, roundNumber) {
+  return `room-${code}-${roundNumber}-${Math.random().toString(36).slice(2, 8)}`;
+}
+
+function normalizeRoomResult(result = {}, modeId = "sprint") {
+  return {
+    score: Number(result.score) || 0,
+    lines: Number(result.lines) || 0,
+    durationMs: Number(result.durationMs) || 0,
+    completed:
+      result.completed === true ||
+      result.mode === "completed" ||
+      result.resultReason === "target-lines" ||
+      (sanitizeRoomMode(modeId) === "sprint" && Number(result.lines) >= 40),
+  };
+}
+
+function compareRoomResults(modeId, leftResult, rightResult) {
+  const mode = sanitizeRoomMode(modeId);
+  const left = normalizeRoomResult(leftResult, mode);
+  const right = normalizeRoomResult(rightResult, mode);
+
+  if (mode === "sprint") {
+    if (left.completed !== right.completed) {
+      return left.completed ? -1 : 1;
+    }
+    if (left.completed && right.completed && left.durationMs !== right.durationMs) {
+      return left.durationMs - right.durationMs;
+    }
+    if (left.lines !== right.lines) {
+      return right.lines - left.lines;
+    }
+    if (left.score !== right.score) {
+      return right.score - left.score;
+    }
+    return left.durationMs - right.durationMs;
+  }
+
+  if (left.score !== right.score) {
+    return right.score - left.score;
+  }
+  if (left.lines !== right.lines) {
+    return right.lines - left.lines;
+  }
+  return left.durationMs - right.durationMs;
+}
+
+function decideRoomWinner(modeId, results) {
+  if (!Array.isArray(results) || results.length < 2) {
+    return {
+      winnerSlot: null,
+      ordered: results ?? [],
+      outcome: "pending",
+    };
+  }
+
+  const ordered = [...results].sort((left, right) => {
+    const comparison = compareRoomResults(modeId, left, right);
+    if (comparison !== 0) {
+      return comparison;
+    }
+    return Number(left.slot) - Number(right.slot);
+  });
+  const comparison = compareRoomResults(modeId, ordered[0], ordered[1]);
+  return {
+    winnerSlot: comparison === 0 ? null : Number(ordered[0].slot),
+    ordered,
+    outcome: comparison === 0 ? "draw" : "win",
+  };
+}
+
 async function getReplay(env, code) {
   return env.DB.prepare("SELECT code, replay_json, summary_json FROM replays WHERE code = ?")
     .bind(code)
     .first();
+}
+
+async function getRoomRow(env, code) {
+  return env.DB.prepare(
+    "SELECT code, created_at, updated_at, mode, seed, is_public, status, current_round, host_token, started_at, finished_at FROM rooms WHERE code = ?"
+  )
+    .bind(code)
+    .first();
+}
+
+async function getRoomPlayers(env, code) {
+  const response = await env.DB.prepare(
+    "SELECT player_token, slot_index, nickname, is_ready, joined_at, updated_at FROM room_players WHERE room_code = ? ORDER BY slot_index ASC"
+  )
+    .bind(code)
+    .all();
+  return response.results ?? [];
+}
+
+async function getRoomResults(env, code, roundNumber) {
+  const response = await env.DB.prepare(
+    "SELECT slot_index, nickname, replay_code, score, lines, duration_ms, summary_json, submitted_at FROM room_results WHERE room_code = ? AND round_number = ? ORDER BY slot_index ASC"
+  )
+    .bind(code, roundNumber)
+    .all();
+  return (response.results ?? []).map((row) => ({
+    slot: Number(row.slot_index),
+    nickname: row.nickname,
+    replayCode: row.replay_code,
+    score: Number(row.score) || 0,
+    lines: Number(row.lines) || 0,
+    durationMs: Number(row.duration_ms) || 0,
+    summary: JSON.parse(row.summary_json),
+    submittedAt: row.submitted_at,
+  }));
+}
+
+async function saveRoomState(env, room, fields = {}) {
+  const nextRoom = {
+    ...room,
+    ...fields,
+    updated_at: fields.updated_at ?? nowIso(),
+  };
+
+  await env.DB.prepare(
+    "UPDATE rooms SET updated_at = ?, seed = ?, status = ?, current_round = ?, host_token = ?, started_at = ?, finished_at = ? WHERE code = ?"
+  )
+    .bind(
+      nextRoom.updated_at,
+      nextRoom.seed,
+      nextRoom.status,
+      nextRoom.current_round,
+      nextRoom.host_token,
+      nextRoom.started_at ?? null,
+      nextRoom.finished_at ?? null,
+      nextRoom.code
+    )
+    .run();
+
+  return nextRoom;
+}
+
+function isRoomExpired(room) {
+  if (!room) {
+    return true;
+  }
+  return Date.now() - toTimestamp(room.updated_at) > ROOM_EXPIRY_MS;
+}
+
+async function syncRoomStatus(env, room, players, results = []) {
+  if (!room) {
+    return null;
+  }
+
+  let nextStatus = room.status;
+  if (isRoomExpired(room)) {
+    nextStatus = "expired";
+  } else if (room.status === "playing" && results.length >= ROOM_CAPACITY) {
+    nextStatus = "finished";
+  } else if (!["playing", "finished"].includes(room.status)) {
+    if (players.length < ROOM_CAPACITY) {
+      nextStatus = "waiting";
+    } else if (players.every((player) => Number(player.is_ready) === 1)) {
+      nextStatus = "ready";
+    } else {
+      nextStatus = "waiting";
+    }
+  }
+
+  if (nextStatus !== room.status) {
+    return saveRoomState(env, room, {
+      status: nextStatus,
+      finished_at: nextStatus === "finished" ? room.finished_at ?? nowIso() : room.finished_at,
+    });
+  }
+
+  return room;
+}
+
+function serializeRoom(room, players, results, appBaseUrl, viewerToken = null) {
+  const winner = decideRoomWinner(room.mode, results);
+  const viewer = viewerToken ? players.find((player) => player.player_token === viewerToken) ?? null : null;
+  const hostPlayer = players.find((player) => player.player_token === room.host_token) ?? null;
+
+  return {
+    code: room.code,
+    mode: sanitizeRoomMode(room.mode),
+    seed: room.seed,
+    status: room.status,
+    isPublic: Boolean(room.is_public),
+    createdAt: room.created_at,
+    updatedAt: room.updated_at,
+    roundNumber: Number(room.current_round) || 1,
+    startedAt: room.started_at ?? null,
+    finishedAt: room.finished_at ?? null,
+    inviteUrl: `${appBaseUrl}?play=room&code=${encodeURIComponent(room.code)}`,
+    openSlots: Math.max(0, ROOM_CAPACITY - players.length),
+    players: players.map((player) => ({
+      slot: Number(player.slot_index),
+      nickname: player.nickname,
+      ready: Number(player.is_ready) === 1,
+      isHost: player.player_token === room.host_token,
+    })),
+    viewer: viewer
+      ? {
+          slot: Number(viewer.slot_index),
+          nickname: viewer.nickname,
+          ready: Number(viewer.is_ready) === 1,
+          isHost: viewer.player_token === room.host_token,
+          playerToken: viewer.player_token,
+        }
+      : null,
+    hostSlot: hostPlayer ? Number(hostPlayer.slot_index) : null,
+    expired: room.status === "expired",
+    results,
+    winnerSlot: winner.winnerSlot,
+    outcome: winner.outcome,
+  };
+}
+
+async function getSerializedRoom(env, appBaseUrl, code, viewerToken = null) {
+  let room = await getRoomRow(env, code);
+  if (!room) {
+    return null;
+  }
+  const players = await getRoomPlayers(env, code);
+  const results = await getRoomResults(env, code, room.current_round);
+  room = await syncRoomStatus(env, room, players, results);
+  return serializeRoom(room, players, results, appBaseUrl, viewerToken);
+}
+
+async function generateUniqueRoomCode(env) {
+  for (let attempt = 0; attempt < 12; attempt += 1) {
+    const code = randomRoomCode();
+    const existing = await getRoomRow(env, code);
+    if (!existing) {
+      return code;
+    }
+  }
+  throw new Error("Unable to generate a unique room code.");
 }
 
 async function handleCreateReplay(request, env, appBaseUrl) {
@@ -43,7 +300,7 @@ async function handleCreateReplay(request, env, appBaseUrl) {
   }
 
   const code = randomCode("R");
-  const createdAt = new Date().toISOString();
+  const createdAt = nowIso();
   const summary = normalizeReplaySummary(replay);
   await env.DB.prepare(
     "INSERT INTO replays (code, created_at, mode, seed, theme_id, summary_json, replay_json) VALUES (?, ?, ?, ?, ?, ?, ?)"
@@ -81,12 +338,12 @@ async function handleGetReplay(env, code) {
 async function handleCreateChallenge(request, env, appBaseUrl) {
   const payload = await readJson(request);
   const code = randomCode("C");
-  const createdAt = new Date().toISOString();
+  const createdAt = nowIso();
   const challenge = {
     kind: String(payload.kind ?? "score_chase"),
     mode: String(payload.mode ?? "seed_challenge"),
     seed: String(payload.seed ?? ""),
-    title: String(payload.title ?? "分享挑战"),
+    title: String(payload.title ?? "Shared Challenge"),
     goal: payload.goal ?? {},
     replayCode: payload.replayCode ? String(payload.replayCode) : null,
     expiresAt: payload.expiresAt ? String(payload.expiresAt) : null,
@@ -143,7 +400,7 @@ async function handleSubmitChallenge(request, env, code) {
     "INSERT INTO submissions (created_at, challenge_code, replay_code, nickname, score, lines, duration_ms) VALUES (?, ?, ?, ?, ?, ?, ?)"
   )
     .bind(
-      new Date().toISOString(),
+      nowIso(),
       code,
       payload.replayCode ? String(payload.replayCode) : null,
       payload.nickname ? String(payload.nickname) : null,
@@ -164,10 +421,9 @@ async function handleGetDaily(env, date) {
     .first();
 
   if (!row) {
-    const generatedSeed = `daily-${date}`;
     const config = {
       mode: "seed_challenge",
-      seed: generatedSeed,
+      seed: `daily-${date}`,
       title: `Daily Challenge ${date}`,
       goal: {
         score: 2500,
@@ -178,7 +434,7 @@ async function handleGetDaily(env, date) {
     await env.DB.prepare(
       "INSERT INTO daily_challenges (challenge_date, created_at, mode, seed, config_json) VALUES (?, ?, ?, ?, ?)"
     )
-      .bind(date, new Date().toISOString(), config.mode, config.seed, JSON.stringify(config))
+      .bind(date, nowIso(), config.mode, config.seed, JSON.stringify(config))
       .run();
 
     row = {
@@ -203,7 +459,7 @@ async function handleSubmitDaily(request, env, date) {
     "INSERT INTO submissions (created_at, challenge_code, replay_code, nickname, score, lines, duration_ms) VALUES (?, ?, ?, ?, ?, ?, ?)"
   )
     .bind(
-      new Date().toISOString(),
+      nowIso(),
       `daily:${date}`,
       payload.replayCode ? String(payload.replayCode) : null,
       payload.nickname ? String(payload.nickname) : null,
@@ -228,12 +484,8 @@ async function handleGetLeaderboard(env, board, current = {}) {
 
   let currentRank = null;
   const hasCurrentSubmission =
-    (
-      current.replayCode !== null &&
-      current.replayCode !== undefined &&
-      current.replayCode !== ""
-    ) ||
-    (current.score !== null && current.score !== undefined);
+    ((current.replayCode !== null && current.replayCode !== undefined && current.replayCode !== "") ||
+      (current.score !== null && current.score !== undefined));
   let rankScore = Number(current.score) || 0;
   let rankDurationMs = Number(current.durationMs) || 0;
   let rankReplayCode = current.replayCode ? String(current.replayCode) : null;
@@ -285,7 +537,7 @@ async function handleCreatePuzzle(request, env, appBaseUrl) {
   )
     .bind(
       code,
-      new Date().toISOString(),
+      nowIso(),
       String(payload.title ?? "Puzzle"),
       payload.author ? String(payload.author) : null,
       JSON.stringify(payload.payload ?? payload)
@@ -313,6 +565,323 @@ async function handleGetPuzzle(env, code) {
   });
 }
 
+async function handleCreateRoom(request, env, appBaseUrl) {
+  const payload = await readJson(request);
+  const code = await generateUniqueRoomCode(env);
+  const createdAt = nowIso();
+  const playerToken = randomCode("P");
+  const room = {
+    code,
+    created_at: createdAt,
+    updated_at: createdAt,
+    mode: sanitizeRoomMode(payload.mode),
+    seed: buildRoomSeed(code, 1),
+    is_public: payload.isPublic ? 1 : 0,
+    status: "waiting",
+    current_round: 1,
+    host_token: playerToken,
+    started_at: null,
+    finished_at: null,
+  };
+
+  await env.DB.prepare(
+    "INSERT INTO rooms (code, created_at, updated_at, mode, seed, is_public, status, current_round, host_token, started_at, finished_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+  )
+    .bind(
+      room.code,
+      room.created_at,
+      room.updated_at,
+      room.mode,
+      room.seed,
+      room.is_public,
+      room.status,
+      room.current_round,
+      room.host_token,
+      room.started_at,
+      room.finished_at
+    )
+    .run();
+
+  await env.DB.prepare(
+    "INSERT INTO room_players (room_code, player_token, slot_index, nickname, is_ready, joined_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)"
+  )
+    .bind(room.code, playerToken, 1, normalizeNickname(payload.nickname, "Host"), 0, createdAt, createdAt)
+    .run();
+
+  const serialized = await getSerializedRoom(env, appBaseUrl, code, playerToken);
+  return json({
+    room: serialized,
+    playerToken,
+  });
+}
+
+async function handleGetPublicRooms(env, appBaseUrl, url) {
+  const filter = url.searchParams.get("filter") ?? "all";
+  const filterMode = sanitizeRoomMode(url.searchParams.get("mode") ?? "");
+  const response =
+    filter === "all"
+      ? await env.DB.prepare("SELECT code FROM rooms WHERE is_public = 1 ORDER BY updated_at DESC LIMIT 24").all()
+      : await env.DB.prepare("SELECT code FROM rooms WHERE is_public = 1 AND mode = ? ORDER BY updated_at DESC LIMIT 24")
+          .bind(filterMode)
+          .all();
+
+  const rooms = [];
+  for (const row of response.results ?? []) {
+    const room = await getSerializedRoom(env, appBaseUrl, row.code);
+    if (!room) {
+      continue;
+    }
+    if (!["waiting", "ready"].includes(room.status) || room.openSlots <= 0 || room.expired) {
+      continue;
+    }
+    rooms.push(room);
+  }
+
+  return json({ rooms });
+}
+
+async function handleGetRoom(env, appBaseUrl, code, url) {
+  const serialized = await getSerializedRoom(env, appBaseUrl, code, url.searchParams.get("playerToken"));
+  if (!serialized) {
+    return json({ error: "Room not found." }, { status: 404 });
+  }
+  return json({ room: serialized });
+}
+
+async function handleJoinRoom(request, env, appBaseUrl, code) {
+  const payload = await readJson(request);
+  let room = await getRoomRow(env, code);
+  if (!room) {
+    return json({ error: "Room not found." }, { status: 404 });
+  }
+  if (isRoomExpired(room)) {
+    room = await saveRoomState(env, room, { status: "expired" });
+    return json({ error: "Room expired." }, { status: 410 });
+  }
+
+  const players = await getRoomPlayers(env, code);
+  const nickname = normalizeNickname(payload.nickname, `Player ${players.length + 1}`);
+  const playerToken = String(payload.playerToken ?? "").trim();
+  const existingPlayer = playerToken ? players.find((player) => player.player_token === playerToken) ?? null : null;
+
+  if (existingPlayer) {
+    await env.DB.prepare("UPDATE room_players SET nickname = ?, updated_at = ? WHERE player_token = ?")
+      .bind(nickname, nowIso(), existingPlayer.player_token)
+      .run();
+    const serialized = await getSerializedRoom(env, appBaseUrl, code, existingPlayer.player_token);
+    return json({
+      room: serialized,
+      playerToken: existingPlayer.player_token,
+    });
+  }
+
+  if (players.length >= ROOM_CAPACITY || ["playing", "finished", "expired"].includes(room.status)) {
+    return json({ error: "Room is not joinable." }, { status: 409 });
+  }
+
+  const usedSlots = new Set(players.map((player) => Number(player.slot_index)));
+  const slot = usedSlots.has(1) ? 2 : 1;
+  const nextPlayerToken = randomCode("P");
+  const timestamp = nowIso();
+
+  await env.DB.prepare(
+    "INSERT INTO room_players (room_code, player_token, slot_index, nickname, is_ready, joined_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)"
+  )
+    .bind(code, nextPlayerToken, slot, nickname, 0, timestamp, timestamp)
+    .run();
+
+  room = await saveRoomState(env, room, {});
+  const serialized = await getSerializedRoom(env, appBaseUrl, code, nextPlayerToken);
+  return json({
+    room: serialized,
+    playerToken: nextPlayerToken,
+  });
+}
+
+async function handleLeaveRoom(request, env, appBaseUrl, code) {
+  const payload = await readJson(request);
+  const playerToken = String(payload.playerToken ?? "").trim();
+  if (!playerToken) {
+    return json({ error: "Missing player token." }, { status: 400 });
+  }
+
+  const room = await getRoomRow(env, code);
+  if (!room) {
+    return json({ error: "Room not found." }, { status: 404 });
+  }
+  const players = await getRoomPlayers(env, code);
+  const existingPlayer = players.find((player) => player.player_token === playerToken);
+  if (!existingPlayer) {
+    return json({ error: "Player not found in room." }, { status: 404 });
+  }
+
+  await env.DB.prepare("DELETE FROM room_players WHERE player_token = ?").bind(playerToken).run();
+  const remainingPlayers = await getRoomPlayers(env, code);
+
+  if (remainingPlayers.length === 0) {
+    await env.DB.prepare("DELETE FROM room_results WHERE room_code = ?").bind(code).run();
+    await env.DB.prepare("DELETE FROM rooms WHERE code = ?").bind(code).run();
+    return json({ ok: true, deleted: true });
+  }
+
+  const nextHost = room.host_token === playerToken ? remainingPlayers[0].player_token : room.host_token;
+  await env.DB.prepare("UPDATE room_players SET is_ready = 0, updated_at = ? WHERE room_code = ?")
+    .bind(nowIso(), code)
+    .run();
+  await saveRoomState(env, room, {
+    host_token: nextHost,
+    status: room.status === "playing" ? "finished" : "waiting",
+    finished_at: room.status === "playing" ? nowIso() : room.finished_at,
+  });
+
+  const serialized = await getSerializedRoom(env, appBaseUrl, code, nextHost);
+  return json({
+    ok: true,
+    room: serialized,
+  });
+}
+
+async function handleRoomStart(request, env, appBaseUrl, code) {
+  const payload = await readJson(request);
+  const playerToken = String(payload.playerToken ?? "").trim();
+  if (!playerToken) {
+    return json({ error: "Missing player token." }, { status: 400 });
+  }
+
+  let room = await getRoomRow(env, code);
+  if (!room) {
+    return json({ error: "Room not found." }, { status: 404 });
+  }
+  const players = await getRoomPlayers(env, code);
+  const player = players.find((entry) => entry.player_token === playerToken);
+  if (!player) {
+    return json({ error: "Player not found in room." }, { status: 404 });
+  }
+
+  const action = String(payload.action ?? "start");
+  if (action === "ready") {
+    const nextReady = payload.ready !== false;
+    await env.DB.prepare("UPDATE room_players SET is_ready = ?, updated_at = ? WHERE player_token = ?")
+      .bind(nextReady ? 1 : 0, nowIso(), playerToken)
+      .run();
+    room = await saveRoomState(env, room, {});
+    const serialized = await getSerializedRoom(env, appBaseUrl, code, playerToken);
+    return json({ room: serialized });
+  }
+
+  if (playerToken !== room.host_token) {
+    return json({ error: "Only the host can start the room." }, { status: 403 });
+  }
+  if (players.length < ROOM_CAPACITY) {
+    return json({ error: "Need two players before starting." }, { status: 409 });
+  }
+  if (!players.every((entry) => Number(entry.is_ready) === 1)) {
+    return json({ error: "Both players must be ready." }, { status: 409 });
+  }
+
+  await saveRoomState(env, room, {
+    status: "playing",
+    started_at: nowIso(),
+    finished_at: null,
+  });
+  const serialized = await getSerializedRoom(env, appBaseUrl, code, playerToken);
+  return json({ room: serialized });
+}
+
+async function handleRoomSubmit(request, env, appBaseUrl, code) {
+  const payload = await readJson(request);
+  const playerToken = String(payload.playerToken ?? "").trim();
+  if (!playerToken) {
+    return json({ error: "Missing player token." }, { status: 400 });
+  }
+
+  let room = await getRoomRow(env, code);
+  if (!room) {
+    return json({ error: "Room not found." }, { status: 404 });
+  }
+
+  const players = await getRoomPlayers(env, code);
+  const player = players.find((entry) => entry.player_token === playerToken);
+  if (!player) {
+    return json({ error: "Player not found in room." }, { status: 404 });
+  }
+
+  const summary = payload.summary ?? {
+    score: payload.score,
+    lines: payload.lines,
+    durationMs: payload.durationMs,
+  };
+  const normalizedSummary = normalizeRoomResult(summary, room.mode);
+  const timestamp = nowIso();
+
+  await env.DB.prepare(
+    "INSERT OR REPLACE INTO room_results (room_code, round_number, slot_index, nickname, replay_code, score, lines, duration_ms, summary_json, submitted_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+  )
+    .bind(
+      code,
+      room.current_round,
+      Number(player.slot_index),
+      normalizeNickname(payload.nickname ?? player.nickname, player.nickname),
+      payload.replayCode ? String(payload.replayCode) : null,
+      normalizedSummary.score,
+      normalizedSummary.lines,
+      normalizedSummary.durationMs,
+      JSON.stringify(normalizedSummary),
+      timestamp
+    )
+    .run();
+
+  const results = await getRoomResults(env, code, room.current_round);
+  if (results.length >= ROOM_CAPACITY) {
+    room = await saveRoomState(env, room, {
+      status: "finished",
+      finished_at: timestamp,
+    });
+  } else {
+    room = await saveRoomState(env, room, {});
+  }
+
+  const serialized = await getSerializedRoom(env, appBaseUrl, code, playerToken);
+  return json({
+    room: serialized,
+  });
+}
+
+async function handleRoomRematch(request, env, appBaseUrl, code) {
+  const payload = await readJson(request);
+  const playerToken = String(payload.playerToken ?? "").trim();
+  if (!playerToken) {
+    return json({ error: "Missing player token." }, { status: 400 });
+  }
+
+  let room = await getRoomRow(env, code);
+  if (!room) {
+    return json({ error: "Room not found." }, { status: 404 });
+  }
+
+  const players = await getRoomPlayers(env, code);
+  if (!players.some((player) => player.player_token === playerToken)) {
+    return json({ error: "Player not found in room." }, { status: 404 });
+  }
+
+  const nextRound = Number(room.current_round) + 1;
+  await env.DB.prepare("UPDATE room_players SET is_ready = 0, updated_at = ? WHERE room_code = ?")
+    .bind(nowIso(), code)
+    .run();
+  room = await saveRoomState(env, room, {
+    current_round: nextRound,
+    seed: buildRoomSeed(code, nextRound),
+    status: "waiting",
+    started_at: null,
+    finished_at: null,
+  });
+
+  const serialized = await getSerializedRoom(env, appBaseUrl, code, playerToken);
+  return json({
+    room: serialized,
+  });
+}
+
 export default {
   async fetch(request, env) {
     if (request.method === "OPTIONS") {
@@ -333,34 +902,21 @@ export default {
     if (request.method === "GET" && segments[1] === "replays" && segments[2]) {
       return handleGetReplay(env, segments[2]);
     }
-
     if (request.method === "POST" && segments[1] === "challenges" && segments.length === 2) {
       return handleCreateChallenge(request, env, appBaseUrl);
     }
     if (request.method === "GET" && segments[1] === "challenges" && segments[2] && segments.length === 3) {
       return handleGetChallenge(env, segments[2]);
     }
-    if (
-      request.method === "POST" &&
-      segments[1] === "challenges" &&
-      segments[2] &&
-      segments[3] === "submissions"
-    ) {
+    if (request.method === "POST" && segments[1] === "challenges" && segments[2] && segments[3] === "submissions") {
       return handleSubmitChallenge(request, env, segments[2]);
     }
-
     if (request.method === "GET" && segments[1] === "daily" && segments[2] && segments.length === 3) {
       return handleGetDaily(env, segments[2]);
     }
-    if (
-      request.method === "POST" &&
-      segments[1] === "daily" &&
-      segments[2] &&
-      segments[3] === "submissions"
-    ) {
+    if (request.method === "POST" && segments[1] === "daily" && segments[2] && segments[3] === "submissions") {
       return handleSubmitDaily(request, env, segments[2]);
     }
-
     if (request.method === "GET" && segments[1] === "leaderboards" && segments[2]) {
       return handleGetLeaderboard(env, segments[2], {
         replayCode: url.searchParams.get("replayCode"),
@@ -369,12 +925,35 @@ export default {
         nickname: url.searchParams.get("nickname"),
       });
     }
-
     if (request.method === "POST" && segments[1] === "puzzles" && segments.length === 2) {
       return handleCreatePuzzle(request, env, appBaseUrl);
     }
     if (request.method === "GET" && segments[1] === "puzzles" && segments[2]) {
       return handleGetPuzzle(env, segments[2]);
+    }
+    if (request.method === "POST" && segments[1] === "rooms" && segments.length === 2) {
+      return handleCreateRoom(request, env, appBaseUrl);
+    }
+    if (request.method === "GET" && segments[1] === "rooms" && segments[2] === "public") {
+      return handleGetPublicRooms(env, appBaseUrl, url);
+    }
+    if (request.method === "GET" && segments[1] === "rooms" && segments[2] && segments.length === 3) {
+      return handleGetRoom(env, appBaseUrl, segments[2], url);
+    }
+    if (request.method === "POST" && segments[1] === "rooms" && segments[2] && segments[3] === "join") {
+      return handleJoinRoom(request, env, appBaseUrl, segments[2]);
+    }
+    if (request.method === "POST" && segments[1] === "rooms" && segments[2] && segments[3] === "leave") {
+      return handleLeaveRoom(request, env, appBaseUrl, segments[2]);
+    }
+    if (request.method === "POST" && segments[1] === "rooms" && segments[2] && segments[3] === "start") {
+      return handleRoomStart(request, env, appBaseUrl, segments[2]);
+    }
+    if (request.method === "POST" && segments[1] === "rooms" && segments[2] && segments[3] === "submit") {
+      return handleRoomSubmit(request, env, appBaseUrl, segments[2]);
+    }
+    if (request.method === "POST" && segments[1] === "rooms" && segments[2] && segments[3] === "rematch") {
+      return handleRoomRematch(request, env, appBaseUrl, segments[2]);
     }
 
     return json({ error: "Not found." }, { status: 404 });

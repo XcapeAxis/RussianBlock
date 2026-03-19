@@ -338,6 +338,29 @@ input {
   margin-top: 16px;
 }
 
+.menu-nav {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin: 18px 0 10px;
+}
+
+.menu-nav-chip .theme-chip-copy span {
+  display: none;
+}
+
+.menu-sections {
+  display: block;
+}
+
+.menu-section {
+  display: none;
+}
+
+.menu-section--active {
+  display: block;
+}
+
 .summary-chip {
   padding: 14px;
   border-radius: 18px;
@@ -362,6 +385,13 @@ input {
   margin-top: 18px;
 }
 
+.menu-history--room {
+  padding: 14px;
+  border-radius: 20px;
+  background: color-mix(in srgb, var(--button-alt) 80%, transparent);
+  border: 1px solid color-mix(in srgb, var(--panel-border) 82%, transparent);
+}
+
 .menu-history-head {
   display: flex;
   align-items: center;
@@ -378,6 +408,39 @@ input {
   display: grid;
   gap: 10px;
   margin-top: 10px;
+}
+
+.room-toggle-row {
+  margin-top: 14px;
+  padding: 14px;
+  border-radius: 16px;
+  background: color-mix(in srgb, var(--chip) 88%, transparent);
+  border: 1px solid color-mix(in srgb, var(--panel-border) 82%, transparent);
+}
+
+.room-filter-group {
+  margin-top: 10px;
+}
+
+.room-status-pill {
+  padding: 8px 12px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--accent) 22%, transparent);
+  color: var(--accent-soft);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.room-lobby--hidden {
+  display: none;
+}
+
+.room-lobby-grid {
+  margin-top: 12px;
+}
+
+.room-result-actions {
+  margin-top: 12px;
 }
 
 .history-card {
@@ -906,6 +969,11 @@ input {
   .menu-summary,
   .result-grid {
     grid-template-columns: 1fr;
+  }
+
+  .menu-nav {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
   .replay-banner {

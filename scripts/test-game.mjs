@@ -7,6 +7,7 @@ import { spawn } from "node:child_process";
 import { buildProject } from "./build.mjs";
 import { startStaticServer } from "./static-server.mjs";
 import { TetrisEngine } from "../src/game/engine.js";
+import { evaluateRoomWinner } from "../src/game/room-utils.js";
 
 const rootDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const screenshotDir = path.join(rootDir, "output", "web-game");
@@ -64,6 +65,82 @@ async function startMockApiServer(appBaseUrl) {
     challengeCreates: [],
     challengeSubmissions: [],
     dailySubmissions: [],
+    rooms: {},
+    roomSequence: 0,
+  };
+
+  const buildRoomSeed = (code, roundNumber) => `room-${code}-${roundNumber}`;
+  const nextRoomCode = () => String(420000 + state.roomSequence++).padStart(6, "0");
+  const nextPlayerToken = (slot) => `P${state.roomSequence}-${slot}`;
+  const syncRoomStatus = (room) => {
+    if (!room) {
+      return room;
+    }
+    if (room.status === "playing" && Object.keys(room.results ?? {}).length >= 2) {
+      room.status = "finished";
+      return room;
+    }
+    if (room.status === "playing") {
+      return room;
+    }
+    if (room.status === "finished") {
+      return room;
+    }
+    if (room.players.length < 2) {
+      room.status = "waiting";
+      return room;
+    }
+    room.status = room.players.every((player) => player.ready) ? "ready" : "waiting";
+    return room;
+  };
+  const serializeRoom = (room, viewerToken = "") => {
+    if (!room) {
+      return null;
+    }
+    syncRoomStatus(room);
+    const results = Object.values(room.results ?? {}).map((entry) => ({
+      slot: entry.slot,
+      nickname: entry.nickname,
+      replayCode: entry.replayCode ?? null,
+      score: entry.score ?? 0,
+      lines: entry.lines ?? 0,
+      durationMs: entry.durationMs ?? 0,
+    }));
+    const winner = evaluateRoomWinner(room.mode, results);
+    const viewer = room.players.find((player) => player.playerToken === viewerToken) ?? null;
+    return {
+      code: room.code,
+      mode: room.mode,
+      seed: room.seed,
+      status: room.status,
+      isPublic: room.isPublic,
+      createdAt: room.createdAt,
+      updatedAt: room.updatedAt,
+      roundNumber: room.roundNumber,
+      startedAt: room.startedAt ?? null,
+      finishedAt: room.finishedAt ?? null,
+      inviteUrl: `${appBaseUrl}?play=room&code=${room.code}`,
+      openSlots: Math.max(0, 2 - room.players.length),
+      players: room.players.map((player) => ({
+        slot: player.slot,
+        nickname: player.nickname,
+        ready: player.ready,
+        isHost: player.playerToken === room.hostToken,
+      })),
+      viewer: viewer
+        ? {
+            slot: viewer.slot,
+            nickname: viewer.nickname,
+            ready: viewer.ready,
+            isHost: viewer.playerToken === room.hostToken,
+            playerToken: viewer.playerToken,
+          }
+        : null,
+      results,
+      winnerSlot: winner?.winnerSlot ?? null,
+      outcome: winner?.outcome ?? (results.length >= 2 ? "draw" : "pending"),
+      expired: false,
+    };
   };
 
   const server = http.createServer(async (request, response) => {
@@ -233,6 +310,217 @@ async function startMockApiServer(appBaseUrl) {
           }
         : null;
       sendJson(response, 200, { board, entries, total: entries.length, currentRank });
+      return;
+    }
+
+    if (request.method === "POST" && segments[0] === "api" && segments[1] === "rooms" && segments.length === 2) {
+      const body = await readRequestBody(request);
+      const code = nextRoomCode();
+      const createdAt = new Date().toISOString();
+      const playerToken = nextPlayerToken(1);
+      state.rooms[code] = {
+        code,
+        mode: body.mode === "ultra" ? "ultra" : "sprint",
+        seed: buildRoomSeed(code, 1),
+        isPublic: body.isPublic !== false,
+        status: "waiting",
+        roundNumber: 1,
+        createdAt,
+        updatedAt: createdAt,
+        startedAt: null,
+        finishedAt: null,
+        hostToken: playerToken,
+        players: [
+          {
+            playerToken,
+            slot: 1,
+            nickname: body.nickname ?? "Host",
+            ready: false,
+          },
+        ],
+        results: {},
+      };
+      sendJson(response, 200, {
+        room: serializeRoom(state.rooms[code], playerToken),
+        playerToken,
+      });
+      return;
+    }
+
+    if (request.method === "GET" && segments[0] === "api" && segments[1] === "rooms" && segments[2] === "public") {
+      const filter = url.searchParams.get("filter") ?? "all";
+      const rooms = Object.values(state.rooms)
+        .filter((room) => (filter === "all" ? true : room.mode === filter))
+        .map((room) => serializeRoom(room))
+        .filter((room) => room && ["waiting", "ready"].includes(room.status) && room.openSlots > 0);
+      sendJson(response, 200, { rooms });
+      return;
+    }
+
+    if (request.method === "GET" && segments[0] === "api" && segments[1] === "rooms" && segments.length === 3) {
+      const room = state.rooms[segments[2]];
+      if (!room) {
+        sendJson(response, 404, { error: "Room not found" });
+        return;
+      }
+      sendJson(response, 200, {
+        room: serializeRoom(room, url.searchParams.get("playerToken") ?? ""),
+      });
+      return;
+    }
+
+    if (request.method === "POST" && segments[0] === "api" && segments[1] === "rooms" && segments[3] === "join") {
+      const room = state.rooms[segments[2]];
+      const body = await readRequestBody(request);
+      if (!room) {
+        sendJson(response, 404, { error: "Room not found" });
+        return;
+      }
+      const existing = room.players.find((player) => player.playerToken === String(body.playerToken ?? "").trim());
+      if (existing) {
+        existing.nickname = body.nickname ?? existing.nickname;
+        room.updatedAt = new Date().toISOString();
+        sendJson(response, 200, {
+          room: serializeRoom(room, existing.playerToken),
+          playerToken: existing.playerToken,
+        });
+        return;
+      }
+      if (room.players.length >= 2 || ["playing", "finished", "expired"].includes(room.status)) {
+        sendJson(response, 409, { error: "Room is not joinable." });
+        return;
+      }
+      const playerToken = nextPlayerToken(room.players.length + 1);
+      room.players.push({
+        playerToken,
+        slot: room.players.some((player) => player.slot === 1) ? 2 : 1,
+        nickname: body.nickname ?? `Player ${room.players.length + 1}`,
+        ready: false,
+      });
+      room.updatedAt = new Date().toISOString();
+      syncRoomStatus(room);
+      sendJson(response, 200, {
+        room: serializeRoom(room, playerToken),
+        playerToken,
+      });
+      return;
+    }
+
+    if (request.method === "POST" && segments[0] === "api" && segments[1] === "rooms" && segments[3] === "leave") {
+      const room = state.rooms[segments[2]];
+      const body = await readRequestBody(request);
+      if (!room) {
+        sendJson(response, 404, { error: "Room not found" });
+        return;
+      }
+      room.players = room.players.filter((player) => player.playerToken !== String(body.playerToken ?? ""));
+      room.updatedAt = new Date().toISOString();
+      if (room.players.length === 0) {
+        delete state.rooms[segments[2]];
+        sendJson(response, 200, { ok: true, deleted: true });
+        return;
+      }
+      if (!room.players.some((player) => player.playerToken === room.hostToken)) {
+        room.hostToken = room.players[0].playerToken;
+      }
+      room.players.forEach((player) => {
+        player.ready = false;
+      });
+      room.status = "waiting";
+      sendJson(response, 200, { ok: true, room: serializeRoom(room, room.hostToken) });
+      return;
+    }
+
+    if (request.method === "POST" && segments[0] === "api" && segments[1] === "rooms" && segments[3] === "start") {
+      const room = state.rooms[segments[2]];
+      const body = await readRequestBody(request);
+      const playerToken = String(body.playerToken ?? "");
+      if (!room) {
+        sendJson(response, 404, { error: "Room not found" });
+        return;
+      }
+      const player = room.players.find((entry) => entry.playerToken === playerToken);
+      if (!player) {
+        sendJson(response, 404, { error: "Player not found in room." });
+        return;
+      }
+      if (String(body.action ?? "start") === "ready") {
+        player.ready = body.ready !== false;
+        room.updatedAt = new Date().toISOString();
+        syncRoomStatus(room);
+        sendJson(response, 200, { room: serializeRoom(room, playerToken) });
+        return;
+      }
+      if (playerToken !== room.hostToken) {
+        sendJson(response, 403, { error: "Only the host can start the room." });
+        return;
+      }
+      if (room.players.length < 2 || !room.players.every((entry) => entry.ready)) {
+        sendJson(response, 409, { error: "Both players must be ready." });
+        return;
+      }
+      room.status = "playing";
+      room.startedAt = new Date().toISOString();
+      room.finishedAt = null;
+      room.updatedAt = room.startedAt;
+      sendJson(response, 200, { room: serializeRoom(room, playerToken) });
+      return;
+    }
+
+    if (request.method === "POST" && segments[0] === "api" && segments[1] === "rooms" && segments[3] === "submit") {
+      const room = state.rooms[segments[2]];
+      const body = await readRequestBody(request);
+      const playerToken = String(body.playerToken ?? "");
+      if (!room) {
+        sendJson(response, 404, { error: "Room not found" });
+        return;
+      }
+      const player = room.players.find((entry) => entry.playerToken === playerToken);
+      if (!player) {
+        sendJson(response, 404, { error: "Player not found in room." });
+        return;
+      }
+      const summary = body.summary ?? {};
+      room.results[player.slot] = {
+        slot: player.slot,
+        nickname: body.nickname ?? player.nickname,
+        replayCode: body.replayCode ?? null,
+        score: summary.score ?? body.score ?? 0,
+        lines: summary.lines ?? body.lines ?? 0,
+        durationMs: summary.durationMs ?? body.durationMs ?? 0,
+      };
+      room.updatedAt = new Date().toISOString();
+      if (Object.keys(room.results).length >= 2) {
+        room.status = "finished";
+        room.finishedAt = room.updatedAt;
+      }
+      sendJson(response, 200, { room: serializeRoom(room, playerToken) });
+      return;
+    }
+
+    if (request.method === "POST" && segments[0] === "api" && segments[1] === "rooms" && segments[3] === "rematch") {
+      const room = state.rooms[segments[2]];
+      const body = await readRequestBody(request);
+      const playerToken = String(body.playerToken ?? "");
+      if (!room) {
+        sendJson(response, 404, { error: "Room not found" });
+        return;
+      }
+      if (!room.players.some((player) => player.playerToken === playerToken)) {
+        sendJson(response, 404, { error: "Player not found in room." });
+        return;
+      }
+      room.roundNumber += 1;
+      room.seed = buildRoomSeed(room.code, room.roundNumber);
+      room.status = "waiting";
+      room.results = {};
+      room.startedAt = null;
+      room.finishedAt = null;
+      room.updatedAt = new Date().toISOString();
+      room.players.forEach((player) => {
+        player.ready = false;
+      });
+      sendJson(response, 200, { room: serializeRoom(room, playerToken) });
       return;
     }
 
@@ -753,7 +1041,7 @@ async function runSharingFlowLoop(baseUrl, playwright) {
         lastSeed: "starter-seed",
         autoStartLastMode: false,
         ghostEnabled: true,
-        apiBase,
+        devApiBase: apiBase,
         nickname: "Axis",
       })
     );
@@ -1029,7 +1317,112 @@ async function runSharingFlowLoop(baseUrl, playwright) {
       );
     });
 
-    await page.goto(`${baseUrl}?menu=1`, { waitUntil: "networkidle" });
+    const guestContext = await browser.newContext({
+      locale: "zh-CN",
+      viewport: { width: 1180, height: 860 },
+    });
+    const guestPage = await guestContext.newPage();
+    attachConsoleCapture(guestPage, consoleErrors);
+    await guestPage.addInitScript((apiBase) => {
+      window.localStorage.setItem(
+        "russian-block-settings",
+        JSON.stringify({
+          bestScore: 0,
+          muted: false,
+          themeId: "classic",
+          lastMode: "marathon",
+          lastSeed: "starter-seed",
+          autoStartLastMode: false,
+          ghostEnabled: true,
+          devApiBase: apiBase,
+          nickname: "Guest",
+        })
+      );
+    }, mockApi.baseUrl);
+
+    try {
+      await page.goto(`${baseUrl}?menu=1&section=rooms`, { waitUntil: "networkidle" });
+      await page.locator('[data-room-mode="ultra"]').click();
+      await page.locator("#room-create-btn").click();
+      await page.waitForFunction(() => {
+        const state = JSON.parse(window.render_game_to_text());
+        return Boolean(state.room?.code);
+      });
+      const roomCode = await page.evaluate(() => JSON.parse(window.render_game_to_text()).room.code);
+      assert(/^\d{6}$/.test(roomCode), "Room creation should return a 6-digit numeric room code");
+      await page.waitForFunction(
+        (expectedCode) => (document.querySelector("#room-list")?.textContent ?? "").includes(expectedCode),
+        roomCode
+      );
+
+      await guestPage.goto(`${baseUrl}?play=room&code=${roomCode}`, { waitUntil: "networkidle" });
+      await guestPage.waitForFunction(
+        (expectedCode) => {
+          const state = JSON.parse(window.render_game_to_text());
+          return state.room?.code === expectedCode;
+        },
+        roomCode
+      );
+      await page.waitForFunction(() => {
+        const state = JSON.parse(window.render_game_to_text());
+        return Number(state.room?.players?.length ?? 0) === 2;
+      });
+
+      await guestPage.locator("#room-ready-btn").click();
+      await page.locator("#room-ready-btn").click();
+      await page.locator("#room-start-btn").click();
+
+      await page.waitForFunction(() => {
+        const state = JSON.parse(window.render_game_to_text());
+        return state.mode === "playing" && state.gameMode === "ultra" && state.room?.status === "playing";
+      });
+      await guestPage.waitForFunction(() => {
+        const state = JSON.parse(window.render_game_to_text());
+        return state.mode === "playing" && state.gameMode === "ultra" && state.room?.status === "playing";
+      });
+
+      const hostRoomState = await getState();
+      const guestRoomState = await guestPage.evaluate(() => JSON.parse(window.render_game_to_text()));
+      assert(hostRoomState.seed === guestRoomState.seed, "Room players should receive the same seed");
+      assert(hostRoomState.room.code === roomCode, "Host should stay attached to the active room");
+
+      await Promise.all([
+        page.evaluate(() => window.advanceTime(120000)),
+        guestPage.evaluate(() => window.advanceTime(120000)),
+      ]);
+
+      await page.waitForFunction(() => {
+        const state = JSON.parse(window.render_game_to_text());
+        return state.mode === "completed" && state.room?.status === "finished";
+      });
+      await guestPage.waitForFunction(() => {
+        const state = JSON.parse(window.render_game_to_text());
+        return state.mode === "completed" && state.room?.status === "finished";
+      });
+      await page.waitForFunction(() => /Room (Win|Loss|Draw)/.test(document.querySelector("#result-title")?.textContent ?? ""));
+      await page.screenshot({ path: path.join(screenshotDir, "room-result.png"), fullPage: false });
+
+      await page.locator("#room-back-btn").click();
+      await page.waitForFunction(() => {
+        const state = JSON.parse(window.render_game_to_text());
+        const lobby = document.querySelector("#room-lobby");
+        return (
+          state.mode === "menu" &&
+          state.room?.status === "finished" &&
+          Boolean(lobby && !lobby.classList.contains("room-lobby--hidden"))
+        );
+      });
+      await page.locator("#room-rematch-btn").click();
+      await page.waitForFunction(() => {
+        const state = JSON.parse(window.render_game_to_text());
+        return state.mode === "menu" && state.room?.roundNumber === 2 && state.room?.status === "waiting";
+      });
+    } finally {
+      await guestContext.close();
+    }
+
+    const replayUploadsBeforeDaily = mockApi.state.replayUploads.length;
+    await page.goto(`${baseUrl}?menu=1&section=daily`, { waitUntil: "networkidle" });
     await page.locator("#load-daily-btn").click();
     await page.waitForFunction(() => JSON.parse(window.render_game_to_text()).mode === "playing");
     state = await getState();
@@ -1038,9 +1431,12 @@ async function runSharingFlowLoop(baseUrl, playwright) {
     await page.evaluate(() => window.advanceTime(120000));
     await page.waitForFunction(() => JSON.parse(window.render_game_to_text()).mode === "completed");
     await waitForCondition(() => mockApi.state.dailySubmissions.length === 1, 3000, "daily submission");
-    assert(mockApi.state.replayUploads.length === 2, "Daily completion should upload its replay");
     assert(
-      mockApi.state.dailySubmissions[0].replayCode === "R2",
+      mockApi.state.replayUploads.length === replayUploadsBeforeDaily + 1,
+      "Daily completion should upload exactly one new replay"
+    );
+    assert(
+      mockApi.state.dailySubmissions[0].replayCode === `R${replayUploadsBeforeDaily + 1}`,
       "Daily submission should include the uploaded replay code"
     );
     await page.waitForFunction(
@@ -1063,7 +1459,7 @@ async function runSharingFlowLoop(baseUrl, playwright) {
       return state.mode === "playing" && state.gameMode === "ghost_race" && state.ghost?.duelMode === "ultra";
     });
 
-    await page.goto(`${baseUrl}?menu=1`, { waitUntil: "networkidle" });
+    await page.goto(`${baseUrl}?menu=1&section=labs`, { waitUntil: "networkidle" });
     await page.locator("#launch-gravity-shift-btn").click();
     await page.waitForFunction(() => {
       const state = JSON.parse(window.render_game_to_text());

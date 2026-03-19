@@ -2,6 +2,7 @@ import { DEFAULT_THEME_ID, isThemeId } from "./themes.js";
 import { DEFAULT_GAME_MODE, normalizeSeed, sanitizeGameMode } from "./modes.js";
 
 const STORAGE_KEY = "russian-block-settings";
+const ROOM_TOKENS_KEY = "russian-block-room-tokens";
 
 const DEFAULT_SETTINGS = {
   bestScore: 0,
@@ -11,7 +12,7 @@ const DEFAULT_SETTINGS = {
   lastSeed: normalizeSeed("starter-seed"),
   autoStartLastMode: true,
   ghostEnabled: true,
-  apiBase: "",
+  devApiBase: "",
   nickname: "",
 };
 
@@ -30,7 +31,12 @@ export function loadSettings() {
       lastSeed: normalizeSeed(parsed.lastSeed),
       autoStartLastMode: parsed.autoStartLastMode !== false,
       ghostEnabled: parsed.ghostEnabled !== false,
-      apiBase: typeof parsed.apiBase === "string" ? parsed.apiBase.trim() : "",
+      devApiBase:
+        typeof parsed.devApiBase === "string"
+          ? parsed.devApiBase.trim()
+          : typeof parsed.apiBase === "string"
+            ? parsed.apiBase.trim()
+            : "",
       nickname: typeof parsed.nickname === "string" ? parsed.nickname.trim().slice(0, 24) : "",
     };
   } catch {
@@ -47,8 +53,40 @@ export function saveSettings(nextSettings) {
     lastSeed: normalizeSeed(nextSettings.lastSeed),
     autoStartLastMode: nextSettings.autoStartLastMode !== false,
     ghostEnabled: nextSettings.ghostEnabled !== false,
-    apiBase: typeof nextSettings.apiBase === "string" ? nextSettings.apiBase.trim() : "",
+    devApiBase: typeof nextSettings.devApiBase === "string" ? nextSettings.devApiBase.trim() : "",
     nickname: typeof nextSettings.nickname === "string" ? nextSettings.nickname.trim().slice(0, 24) : "",
   };
   window.localStorage.setItem(STORAGE_KEY, JSON.stringify(payload));
+}
+
+export function loadRoomTokens() {
+  try {
+    const raw = window.localStorage.getItem(ROOM_TOKENS_KEY);
+    if (!raw) {
+      return {};
+    }
+    const parsed = JSON.parse(raw);
+    if (!parsed || typeof parsed !== "object") {
+      return {};
+    }
+    return Object.fromEntries(
+      Object.entries(parsed)
+        .map(([roomCode, token]) => [String(roomCode), typeof token === "string" ? token.trim() : ""])
+        .filter(([, token]) => token.length > 0)
+    );
+  } catch {
+    return {};
+  }
+}
+
+export function saveRoomTokens(tokens) {
+  const payload =
+    tokens && typeof tokens === "object"
+      ? Object.fromEntries(
+          Object.entries(tokens)
+            .map(([roomCode, token]) => [String(roomCode), typeof token === "string" ? token.trim() : ""])
+            .filter(([, token]) => token.length > 0)
+        )
+      : {};
+  window.localStorage.setItem(ROOM_TOKENS_KEY, JSON.stringify(payload));
 }

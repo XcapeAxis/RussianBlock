@@ -92,4 +92,54 @@ export class RussianBlockApiClient {
   getLeaderboard(board, params = {}) {
     return this.request(`/api/leaderboards/${encodeURIComponent(board)}${buildQueryString(params)}`);
   }
+
+  createRoom(payload) {
+    return this.request("/api/rooms", {
+      method: "POST",
+      body: payload,
+    });
+  }
+
+  getPublicRooms(params = {}) {
+    return this.request(`/api/rooms/public${buildQueryString(params)}`);
+  }
+
+  getRoom(code, params = {}) {
+    return this.request(`/api/rooms/${encodeURIComponent(code)}${buildQueryString(params)}`);
+  }
+
+  joinRoom(code, payload) {
+    return this.request(`/api/rooms/${encodeURIComponent(code)}/join`, {
+      method: "POST",
+      body: payload,
+    });
+  }
+
+  leaveRoom(code, payload) {
+    return this.request(`/api/rooms/${encodeURIComponent(code)}/leave`, {
+      method: "POST",
+      body: payload,
+    });
+  }
+
+  updateRoomStart(code, payload) {
+    return this.request(`/api/rooms/${encodeURIComponent(code)}/start`, {
+      method: "POST",
+      body: payload,
+    });
+  }
+
+  submitRoom(code, payload) {
+    return this.request(`/api/rooms/${encodeURIComponent(code)}/submit`, {
+      method: "POST",
+      body: payload,
+    });
+  }
+
+  rematchRoom(code, payload) {
+    return this.request(`/api/rooms/${encodeURIComponent(code)}/rematch`, {
+      method: "POST",
+      body: payload,
+    });
+  }
 }
