@@ -146,7 +146,7 @@ async function startMockApiServer(appBaseUrl) {
 
   const server = http.createServer(async (request, response) => {
     if (!request.url) {
-      sendJson(response, 404, { error: "Missing URL" });
+      sendJson(response, 404, { error: "缺少请求地址" });
       return;
     }
 
@@ -182,7 +182,7 @@ async function startMockApiServer(appBaseUrl) {
     if (request.method === "GET" && segments[0] === "api" && segments[1] === "replays" && segments.length === 3) {
       const replay = state.replayMap[segments[2]];
       if (!replay) {
-        sendJson(response, 404, { error: "Replay not found" });
+        sendJson(response, 404, { error: "未找到该回放" });
         return;
       }
       sendJson(response, 200, {
@@ -221,7 +221,7 @@ async function startMockApiServer(appBaseUrl) {
         code: segments[2],
         mode: "ultra",
         seed: "shared-ultra-seed",
-        title: "Mock challenge",
+        title: "示例挑战",
         goal: {
           score: 1200,
           lines: 12,
@@ -254,7 +254,7 @@ async function startMockApiServer(appBaseUrl) {
         challenge: {
           mode: "ultra",
           seed: `daily-ultra-${segments[2]}`,
-          title: `Daily Challenge ${segments[2]}`,
+          title: `今日挑战 ${segments[2]}`,
           goal: {
             score: 2000,
             lines: 10,
@@ -335,7 +335,7 @@ async function startMockApiServer(appBaseUrl) {
           {
             playerToken,
             slot: 1,
-            nickname: body.nickname ?? "Host",
+            nickname: body.nickname ?? "房主",
             ready: false,
           },
         ],
@@ -361,7 +361,7 @@ async function startMockApiServer(appBaseUrl) {
     if (request.method === "GET" && segments[0] === "api" && segments[1] === "rooms" && segments.length === 3) {
       const room = state.rooms[segments[2]];
       if (!room) {
-        sendJson(response, 404, { error: "Room not found" });
+        sendJson(response, 404, { error: "未找到该房间" });
         return;
       }
       sendJson(response, 200, {
@@ -374,7 +374,7 @@ async function startMockApiServer(appBaseUrl) {
       const room = state.rooms[segments[2]];
       const body = await readRequestBody(request);
       if (!room) {
-        sendJson(response, 404, { error: "Room not found" });
+        sendJson(response, 404, { error: "未找到该房间" });
         return;
       }
       const existing = room.players.find((player) => player.playerToken === String(body.playerToken ?? "").trim());
@@ -388,14 +388,14 @@ async function startMockApiServer(appBaseUrl) {
         return;
       }
       if (room.players.length >= 2 || ["playing", "finished", "expired"].includes(room.status)) {
-        sendJson(response, 409, { error: "Room is not joinable." });
+        sendJson(response, 409, { error: "当前房间无法加入。" });
         return;
       }
       const playerToken = nextPlayerToken(room.players.length + 1);
       room.players.push({
         playerToken,
         slot: room.players.some((player) => player.slot === 1) ? 2 : 1,
-        nickname: body.nickname ?? `Player ${room.players.length + 1}`,
+            nickname: body.nickname ?? `玩家 ${room.players.length + 1}`,
         ready: false,
       });
       room.updatedAt = new Date().toISOString();
@@ -411,7 +411,7 @@ async function startMockApiServer(appBaseUrl) {
       const room = state.rooms[segments[2]];
       const body = await readRequestBody(request);
       if (!room) {
-        sendJson(response, 404, { error: "Room not found" });
+        sendJson(response, 404, { error: "未找到该房间" });
         return;
       }
       room.players = room.players.filter((player) => player.playerToken !== String(body.playerToken ?? ""));
@@ -437,12 +437,12 @@ async function startMockApiServer(appBaseUrl) {
       const body = await readRequestBody(request);
       const playerToken = String(body.playerToken ?? "");
       if (!room) {
-        sendJson(response, 404, { error: "Room not found" });
+        sendJson(response, 404, { error: "未找到该房间" });
         return;
       }
       const player = room.players.find((entry) => entry.playerToken === playerToken);
       if (!player) {
-        sendJson(response, 404, { error: "Player not found in room." });
+        sendJson(response, 404, { error: "房间中未找到该玩家。" });
         return;
       }
       if (String(body.action ?? "start") === "ready") {
@@ -453,11 +453,11 @@ async function startMockApiServer(appBaseUrl) {
         return;
       }
       if (playerToken !== room.hostToken) {
-        sendJson(response, 403, { error: "Only the host can start the room." });
+        sendJson(response, 403, { error: "只有房主可以开始房间。" });
         return;
       }
       if (room.players.length < 2 || !room.players.every((entry) => entry.ready)) {
-        sendJson(response, 409, { error: "Both players must be ready." });
+        sendJson(response, 409, { error: "两名玩家都需要先准备。" });
         return;
       }
       room.status = "playing";
@@ -473,12 +473,12 @@ async function startMockApiServer(appBaseUrl) {
       const body = await readRequestBody(request);
       const playerToken = String(body.playerToken ?? "");
       if (!room) {
-        sendJson(response, 404, { error: "Room not found" });
+        sendJson(response, 404, { error: "未找到该房间" });
         return;
       }
       const player = room.players.find((entry) => entry.playerToken === playerToken);
       if (!player) {
-        sendJson(response, 404, { error: "Player not found in room." });
+        sendJson(response, 404, { error: "房间中未找到该玩家。" });
         return;
       }
       const summary = body.summary ?? {};
@@ -504,11 +504,11 @@ async function startMockApiServer(appBaseUrl) {
       const body = await readRequestBody(request);
       const playerToken = String(body.playerToken ?? "");
       if (!room) {
-        sendJson(response, 404, { error: "Room not found" });
+        sendJson(response, 404, { error: "未找到该房间" });
         return;
       }
       if (!room.players.some((player) => player.playerToken === playerToken)) {
-        sendJson(response, 404, { error: "Player not found in room." });
+        sendJson(response, 404, { error: "房间中未找到该玩家。" });
         return;
       }
       room.roundNumber += 1;
@@ -525,7 +525,7 @@ async function startMockApiServer(appBaseUrl) {
       return;
     }
 
-    sendJson(response, 404, { error: "Not found" });
+    sendJson(response, 404, { error: "未找到接口" });
   });
 
   await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
@@ -1315,10 +1315,10 @@ async function runSharingFlowLoop(baseUrl, playwright) {
         themeId: "classic",
         lastMode: "marathon",
         lastSeed: "starter-seed",
-        autoStartLastMode: false,
+        autoStartLastMode: true,
         ghostEnabled: true,
         devApiBase: apiBase,
-        nickname: "Axis",
+        nickname: "玩家甲",
       })
     );
     window.__clipboardWrites = [];
@@ -1366,6 +1366,29 @@ async function runSharingFlowLoop(baseUrl, playwright) {
     })();
     let state;
 
+    await page.goto(baseUrl, { waitUntil: "networkidle" });
+    await page.waitForFunction(() => {
+      const state = JSON.parse(window.render_game_to_text());
+      const menu = document.querySelector("#menu-overlay");
+      return state.mode === "menu" && Boolean(menu && !menu.classList.contains("menu-overlay--hidden"));
+    });
+    await page.waitForFunction(() => {
+      const text = document.body.textContent ?? "";
+      return /俄罗斯方块/.test(text) && /房间对战/.test(text) && /观战回放/.test(text) && /实验玩法/.test(text) && !/Labs/.test(text);
+    });
+    state = await getState();
+    assert(state.mode === "menu", "Root entry should stay on the main menu even if old auto-start settings are enabled");
+    await page.screenshot({ path: path.join(screenshotDir, "menu-home-cn.png"), fullPage: false });
+
+    await page.goto(`${baseUrl}?autostart=1`, { waitUntil: "networkidle" });
+    await page.waitForFunction(() => JSON.parse(window.render_game_to_text()).mode === "playing");
+    await page.locator("#settings-btn").click();
+    await page.waitForFunction(() => {
+      const text = document.querySelector("#settings-panel")?.textContent ?? "";
+      return /设置/.test(text) && /显示落点虚影/.test(text) && /昵称/.test(text) && !/Nickname/.test(text);
+    });
+    await page.locator("#close-settings-btn").click();
+
     await page.goto(`${baseUrl}?play=challenge&code=CDEMO1`, { waitUntil: "networkidle" });
     await page.waitForFunction(() => JSON.parse(window.render_game_to_text()).mode === "playing");
     state = await getState();
@@ -1384,7 +1407,7 @@ async function runSharingFlowLoop(baseUrl, playwright) {
       "Challenge submission should include the uploaded replay code"
     );
     assert(
-      mockApi.state.challengeSubmissions[0].nickname === "Axis",
+      mockApi.state.challengeSubmissions[0].nickname === "玩家甲",
       "Challenge submission should include the stored nickname"
     );
     await expectResultText(page, /已提交/);
@@ -1398,9 +1421,9 @@ async function runSharingFlowLoop(baseUrl, playwright) {
           target &&
             resultGrid &&
             /#1/.test(target.textContent ?? "") &&
-            /Axis/.test(target.textContent ?? "") &&
-            /Goal (reached|missed)/.test(resultGrid.textContent ?? "") &&
-            /Target/.test(resultGrid.textContent ?? "")
+            /玩家甲/.test(target.textContent ?? "") &&
+            /目标达成|目标未达成/.test(resultGrid.textContent ?? "") &&
+            /目标/.test(resultGrid.textContent ?? "")
         );
       }
     );
@@ -1472,7 +1495,7 @@ async function runSharingFlowLoop(baseUrl, playwright) {
       const state = JSON.parse(window.render_game_to_text());
       return state.mode === "completed";
     });
-    await page.waitForFunction(() => /Ghost Duel/.test(document.querySelector("#result-title")?.textContent ?? ""));
+    await page.waitForFunction(() => /影子挑战/.test(document.querySelector("#result-title")?.textContent ?? ""));
     await page.evaluate(() => {
       try {
         Object.defineProperty(navigator, "share", { configurable: true, value: undefined });
@@ -1500,6 +1523,11 @@ async function runSharingFlowLoop(baseUrl, playwright) {
           !banner.classList.contains("replay-banner--hidden") &&
           !panel.classList.contains("watch-panel--hidden")
       );
+    });
+    await page.waitForFunction(() => {
+      const eyebrow = document.querySelector("#replay-eyebrow")?.textContent ?? "";
+      const title = document.querySelector("#watch-panel-title")?.textContent ?? "";
+      return /观战/.test(eyebrow) && /回放/.test(title);
     });
     await page.waitForFunction(() => {
       const title = document.querySelector("#watch-panel-title");
@@ -1618,13 +1646,17 @@ async function runSharingFlowLoop(baseUrl, playwright) {
           autoStartLastMode: false,
           ghostEnabled: true,
           devApiBase: apiBase,
-          nickname: "Guest",
+          nickname: "玩家乙",
         })
       );
     }, mockApi.baseUrl);
 
     try {
       await page.goto(`${baseUrl}?menu=1&section=rooms`, { waitUntil: "networkidle" });
+      await page.waitForFunction(() => {
+        const text = document.body.textContent ?? "";
+        return /房间对战/.test(text) && /创建房间/.test(text) && /公开房间/.test(text);
+      });
       const initialRoomMetrics = await getRoomMenuMetrics(page);
       assert(initialRoomMetrics.roomGridColumns >= 2, "Desktop room page should use a two-column layout");
       assert(initialRoomMetrics.rightX - initialRoomMetrics.leftX >= 280, "Room list should sit beside the create/join column on desktop");
@@ -1688,7 +1720,7 @@ async function runSharingFlowLoop(baseUrl, playwright) {
         const state = JSON.parse(window.render_game_to_text());
         return state.mode === "completed" && state.room?.status === "finished";
       });
-      await page.waitForFunction(() => /Room (Win|Loss|Draw)/.test(document.querySelector("#result-title")?.textContent ?? ""));
+    await page.waitForFunction(() => /房间胜利|房间失利|房间平局/.test(document.querySelector("#result-title")?.textContent ?? ""));
       await page.screenshot({ path: path.join(screenshotDir, "room-result.png"), fullPage: false });
 
       await page.locator("#room-back-btn").click();
@@ -1737,7 +1769,7 @@ async function runSharingFlowLoop(baseUrl, playwright) {
             list &&
             /今日挑战/.test(title.textContent ?? "") &&
             /#1/.test(list.textContent ?? "") &&
-            /Axis/.test(list.textContent ?? "")
+            /玩家甲/.test(list.textContent ?? "")
         );
       }
     );

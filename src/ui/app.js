@@ -194,7 +194,7 @@ function buildMenuNavMarkup() {
     ["rooms", "房间对战"],
     ["daily", "今日挑战"],
     ["spectate", "观战回放"],
-    ["labs", "Labs"],
+    ["labs", "实验玩法"],
   ]
     .map(
       ([sectionId, label]) => `
@@ -247,9 +247,9 @@ function buildGhostDuelModeMarkup() {
 
 function buildGhostSourceMarkup() {
   return [
-    ["local_best", "Local Best", "Use your strongest saved run for the selected ruleset."],
-    ["local_recent", "Recent Run", "Race the newest saved run for the selected ruleset."],
-    ["shared_code", "Replay Code", "Fetch a remote replay and duel it live."],
+    ["local_best", "本地最佳", "使用当前规则下保存的最佳成绩作为影子。"],
+    ["local_recent", "最近一局", "使用当前规则下最近保存的一局作为影子。"],
+    ["shared_code", "回放码", "输入分享回放码，在线读取并立即挑战。"],
   ]
     .map(
       ([sourceId, title, copy]) => `
@@ -305,11 +305,11 @@ const HARD_DROP_MAX_DURATION_MS = 240;
 const HARD_DROP_MAX_LATERAL_DRIFT_RATIO = 0.45;
 const SPECTATE_SPEED_OPTIONS = [0.5, 1, 2, 4];
 const SPECTATE_MARKER_LABELS = {
-  start: "Start",
-  "line-clear": "Line Clear",
-  tspin: "T-Spin",
-  completed: "Completed",
-  gameover: "Game Over",
+  start: "起点",
+  "line-clear": "消行",
+  tspin: "T 字旋",
+  completed: "完成",
+  gameover: "结束",
 };
 
 function distanceBetweenPoints(a, b) {
@@ -317,7 +317,7 @@ function distanceBetweenPoints(a, b) {
 }
 
 function formatSpectateMarkerLabel(reason) {
-  return SPECTATE_MARKER_LABELS[reason] ?? "Marker";
+  return SPECTATE_MARKER_LABELS[reason] ?? "节点";
 }
 
 function formatGhostMetricValue(metric, value) {
@@ -476,8 +476,6 @@ export class RussianBlockApp {
       if (this.query.get("demo") === "1") {
         this.populateDemoBoard();
       }
-    } else if (this.query.get("menu") !== "1" && this.settings.autoStartLastMode) {
-      this.startGame({ gameMode: this.selectedGameMode, seed: this.selectedSeed });
     }
     if (!hasSharedRoute && this.apiClient.configured) {
       void this.refreshPublicRooms();
@@ -505,15 +503,15 @@ export class RussianBlockApp {
     this.root.innerHTML = `
       <div class="app-shell">
         <div class="stage" id="stage">
-          <canvas id="game-canvas" aria-label="Russian Block"></canvas>
+          <canvas id="game-canvas" aria-label="俄罗斯方块"></canvas>
           <div class="top-actions">
             <button type="button" class="ui-chip" id="settings-btn">设置</button>
             <button type="button" class="ui-chip ui-chip--accent" id="pause-btn">暂停</button>
           </div>
           <div class="overlay" id="menu-overlay">
             <div class="overlay-card">
-              <span class="eyebrow">Windows / Android Web + PWA</span>
-              <h1>Russian Block</h1>
+          <span class="eyebrow">电脑与安卓网页 / 可安装应用</span>
+              <h1>俄罗斯方块</h1>
               <p>经典俄罗斯方块，支持键盘、滑屏手势、离线缓存、模式切换和本地复盘。</p>
               <div class="theme-showcase">
                 <span class="theme-showcase-label">模式选择</span>
@@ -524,9 +522,9 @@ export class RussianBlockApp {
                 ${buildModeCardsMarkup()}
               </div>
               <div class="theme-showcase ghost-config ghost-config--hidden" id="ghost-config">
-                <span class="theme-showcase-label">Ghost Duel Setup</span>
-                <strong id="ghost-config-title">Sprint 40L</strong>
-                <p id="ghost-config-copy">Race your best saved replay or load a shared code.</p>
+                <span class="theme-showcase-label">影子挑战设置</span>
+                <strong id="ghost-config-title">冲刺 40 行</strong>
+                <p id="ghost-config-copy">选择一个影子来源，和同规则的回放同种子对战。</p>
                 <div class="settings-theme-grid ghost-config-grid" id="ghost-duel-mode-grid">
                   ${buildGhostDuelModeMarkup()}
                 </div>
@@ -534,13 +532,13 @@ export class RussianBlockApp {
                   ${buildGhostSourceMarkup()}
                 </div>
                 <label class="seed-field ghost-code-field ghost-code-field--hidden" id="ghost-code-field">
-                  <span class="theme-showcase-label">Replay Code</span>
-                  <input type="text" id="ghost-code-input" placeholder="Enter a shared replay code" />
+                  <span class="theme-showcase-label">回放码</span>
+                  <input type="text" id="ghost-code-input" placeholder="输入分享回放码" />
                 </label>
                 <p class="overlay-hint overlay-hint--compact" id="ghost-config-status"></p>
               </div>
               <label class="seed-field" id="seed-field">
-                <span class="theme-showcase-label">Challenge Seed</span>
+                <span class="theme-showcase-label">固定种子</span>
                 <input type="text" id="seed-input" placeholder="输入固定种子或留空自动生成" />
               </label>
               <div class="overlay-actions">
@@ -569,7 +567,7 @@ export class RussianBlockApp {
                 </div>
                 <label class="seed-field">
                   <span class="theme-showcase-label">挑战码 / 回放码</span>
-                  <input type="text" id="share-code-input" placeholder="输入 code 后可直接挑战或观战" />
+                  <input type="text" id="share-code-input" placeholder="输入挑战码或回放码后可直接挑战或观战" />
                 </label>
                 <div class="overlay-actions">
                   <button type="button" class="secondary-btn menu-mini-btn" id="play-challenge-btn">开始挑战</button>
@@ -579,23 +577,23 @@ export class RussianBlockApp {
               </div>
               <div class="menu-history">
                 <div class="menu-history-head">
-                  <span class="theme-showcase-label">Labs / Experimental</span>
+                  <span class="theme-showcase-label">实验玩法</span>
                 </div>
                 <div class="history-card history-card--lab">
                   <div class="history-row history-row--static">
-                    <strong>Gravity Shift</strong>
-                    <span>Flip gravity every 18 seconds with a 1.5 second warning window.</span>
+                    <strong>重力反转</strong>
+                    <span>每 18 秒上下重力翻转一次，并在翻转前 1.5 秒预警。</span>
                   </div>
-                  <button type="button" class="secondary-btn menu-mini-btn" id="launch-gravity-shift-btn">Launch Lab</button>
+                  <button type="button" class="secondary-btn menu-mini-btn" id="launch-gravity-shift-btn">启动实验</button>
                 </div>
               </div>
               <p class="overlay-hint" id="status-copy"></p>
-              <p class="overlay-hint">触屏：左右滑移动，单击旋转，下拖软降，下甩硬降，双击 Hold。键盘：A/D 移动，W 旋转，Space 硬降，C Hold。</p>
+              <p class="overlay-hint">触屏：左右滑移动，单击旋转，下拖软降，下甩硬降，双击暂存。键盘：A/D 移动，W 旋转，Space 硬降，C 暂存。</p>
             </div>
           </div>
           <div class="overlay overlay--hidden" id="pause-overlay">
             <div class="overlay-card overlay-card--compact">
-              <span class="eyebrow">Paused</span>
+              <span class="eyebrow">已暂停</span>
               <h2>已暂停</h2>
               <div class="overlay-actions">
                 <button type="button" class="primary-btn" id="resume-btn">继续</button>
@@ -606,7 +604,7 @@ export class RussianBlockApp {
           </div>
           <div class="overlay overlay--hidden" id="gameover-overlay">
             <div class="overlay-card overlay-card--compact">
-              <span class="eyebrow" id="result-eyebrow">Game Over</span>
+              <span class="eyebrow" id="result-eyebrow">游戏结束</span>
               <h2 id="result-title">堆到顶了</h2>
               <p id="gameover-copy">再来一局，刷新你的最高分。</p>
               <div class="result-grid" id="result-grid"></div>
@@ -616,26 +614,26 @@ export class RussianBlockApp {
                 <button type="button" class="secondary-btn" id="replay-full-btn">回放本局</button>
                 <button type="button" class="secondary-btn" id="replay-clip-btn">回放最后 8 秒</button>
                 <button type="button" class="secondary-btn" id="share-run-btn">导出回放</button>
-                <button type="button" class="secondary-btn" id="highlight-share-btn">Share Highlight</button>
-                <button type="button" class="secondary-btn" id="ghost-run-btn">Race This Replay</button>
+                <button type="button" class="secondary-btn" id="highlight-share-btn">分享高光</button>
+                <button type="button" class="secondary-btn" id="ghost-run-btn">挑战这个回放</button>
                 <button type="button" class="secondary-btn" id="challenge-run-btn">生成挑战</button>
               </div>
             </div>
           </div>
           <div class="replay-banner replay-banner--hidden" id="replay-banner">
             <div class="replay-banner-copy">
-              <span class="eyebrow" id="replay-eyebrow">Spectate</span>
-              <strong id="replay-title">Replay Player</strong>
-              <p id="replay-copy">Pause, scrub, and jump between key markers.</p>
+              <span class="eyebrow" id="replay-eyebrow">观战</span>
+              <strong id="replay-title">回放播放器</strong>
+              <p id="replay-copy">暂停、拖动时间轴，或跳到关键节点。</p>
             </div>
             <div class="replay-banner-meta">
               <strong id="replay-clock">00:00 / 00:00</strong>
-              <span id="replay-marker-copy">Marker: Start</span>
+              <span id="replay-marker-copy">节点：起点</span>
             </div>
             <div class="overlay-actions replay-banner-actions">
-              <button type="button" class="secondary-btn menu-mini-btn" id="replay-toggle-btn">Pause</button>
-              <button type="button" class="secondary-btn menu-mini-btn" id="replay-restart-btn">Restart</button>
-              <button type="button" class="secondary-btn menu-mini-btn" id="exit-replay-btn">Exit</button>
+              <button type="button" class="secondary-btn menu-mini-btn" id="replay-toggle-btn">暂停</button>
+              <button type="button" class="secondary-btn menu-mini-btn" id="replay-restart-btn">重新播放</button>
+              <button type="button" class="secondary-btn menu-mini-btn" id="exit-replay-btn">退出</button>
             </div>
           </div>
           <aside class="settings-panel settings-panel--hidden" id="settings-panel">
@@ -657,26 +655,20 @@ export class RussianBlockApp {
             </div>
             <div class="settings-block">
               <label class="toggle-row">
-                <span>自动开局</span>
-                <input type="checkbox" id="autostart-toggle" />
-              </label>
-            </div>
-            <div class="settings-block">
-              <label class="toggle-row">
-                <span>显示 Ghost</span>
+                <span>显示落点虚影</span>
                 <input type="checkbox" id="ghost-toggle" />
               </label>
             </div>
             <label class="seed-field settings-nickname">
-              <span class="theme-showcase-label">Nickname</span>
-              <input type="text" id="nickname-input" maxlength="24" placeholder="Anonymous" />
+              <span class="theme-showcase-label">昵称</span>
+              <input type="text" id="nickname-input" maxlength="24" placeholder="未命名玩家" />
             </label>
             <button type="button" class="secondary-btn settings-install settings-install--hidden" id="install-btn">安装到主屏幕</button>
             <label class="seed-field settings-api">
-              <span class="theme-showcase-label">API Base</span>
+              <span class="theme-showcase-label">接口地址</span>
               <input type="text" id="api-base-input" placeholder="https://your-worker.example.workers.dev" />
             </label>
-            <p class="settings-note">首次联网打开后会缓存资源，后续可以离线继续玩。主题、模式、Ghost 和 API 地址都会保存在本机。</p>
+            <p class="settings-note">首次联网打开后会缓存资源，后续可以离线继续玩。主题、模式、昵称和落点虚影都会保存在本机。</p>
           </aside>
         </div>
       </div>
@@ -695,7 +687,6 @@ export class RussianBlockApp {
     this.resultGrid = this.root.querySelector("#result-grid");
     this.settingsPanel = this.root.querySelector("#settings-panel");
     this.muteToggle = this.root.querySelector("#mute-toggle");
-    this.autostartToggle = this.root.querySelector("#autostart-toggle");
     this.ghostToggle = this.root.querySelector("#ghost-toggle");
     this.nicknameInput = this.root.querySelector("#nickname-input");
     this.apiBaseInput = this.root.querySelector("#api-base-input");
@@ -734,15 +725,15 @@ export class RussianBlockApp {
     this.viewReplayPageButton.type = "button";
     this.viewReplayPageButton.className = "secondary-btn";
     this.viewReplayPageButton.id = "view-replay-page-btn";
-    this.viewReplayPageButton.textContent = "View Replay Page";
+    this.viewReplayPageButton.textContent = "查看回放页";
     this.shareCardButton.insertAdjacentElement("afterend", this.viewReplayPageButton);
     this.watchPanel = document.createElement("section");
     this.watchPanel.id = "watch-panel";
     this.watchPanel.className = "watch-panel watch-panel--hidden";
     this.watchPanel.innerHTML = `
-      <span class="eyebrow">Spectate Controls</span>
-      <strong id="watch-panel-title">Replay Player</strong>
-      <p id="watch-panel-copy">Scrub the run, jump to markers, or spin up the same seed again.</p>
+      <span class="eyebrow">观战控制</span>
+      <strong id="watch-panel-title">回放播放器</strong>
+      <p id="watch-panel-copy">拖动进度、跳到节点，或重新挑战同一题。</p>
       <div class="watch-panel-grid" id="watch-panel-grid"></div>
       <div class="spectate-timeline">
         <div class="spectate-timeline-head">
@@ -757,7 +748,7 @@ export class RussianBlockApp {
           max="1"
           step="100"
           value="0"
-          aria-label="Replay timeline"
+          aria-label="回放时间轴"
         />
       </div>
       <div class="spectate-speed-group" id="spectate-speed-group">
@@ -765,11 +756,11 @@ export class RussianBlockApp {
       </div>
       <div class="spectate-marker-list" id="spectate-marker-list"></div>
       <div class="overlay-actions watch-panel-actions">
-        <button type="button" class="secondary-btn" id="watch-copy-btn">Copy Link</button>
-        <button type="button" class="secondary-btn" id="watch-highlight-btn">Share Highlight</button>
-        <button type="button" class="secondary-btn" id="watch-share-card-btn">Share Card</button>
-        <button type="button" class="secondary-btn" id="watch-challenge-btn">Create Challenge</button>
-        <button type="button" class="secondary-btn" id="watch-ghost-btn">Play This Ghost</button>
+        <button type="button" class="secondary-btn" id="watch-copy-btn">复制链接</button>
+        <button type="button" class="secondary-btn" id="watch-highlight-btn">分享高光</button>
+        <button type="button" class="secondary-btn" id="watch-share-card-btn">分享战绩卡</button>
+        <button type="button" class="secondary-btn" id="watch-challenge-btn">生成挑战</button>
+        <button type="button" class="secondary-btn" id="watch-ghost-btn">挑战这个影子</button>
         <button type="button" class="primary-btn" id="watch-seed-btn">玩同一题</button>
         <button type="button" class="secondary-btn" id="watch-menu-btn">回到菜单</button>
       </div>
@@ -796,7 +787,7 @@ export class RussianBlockApp {
     this.remoteSessionPanel.id = "remote-session-panel";
     this.remoteSessionPanel.className = "remote-session-panel remote-session-panel--hidden";
     this.remoteSessionPanel.innerHTML = `
-      <span class="eyebrow">Challenge</span>
+      <span class="eyebrow">挑战</span>
       <strong id="remote-session-title"></strong>
       <p id="remote-session-copy"></p>
     `;
@@ -807,7 +798,7 @@ export class RussianBlockApp {
     this.ghostSessionPanel.id = "ghost-session-panel";
     this.ghostSessionPanel.className = "ghost-session-panel ghost-session-panel--hidden";
     this.ghostSessionPanel.innerHTML = `
-      <span class="eyebrow">Ghost Duel</span>
+      <span class="eyebrow">影子挑战</span>
       <strong id="ghost-session-title"></strong>
       <p id="ghost-session-copy"></p>
       <div class="watch-panel-grid ghost-session-grid" id="ghost-session-grid"></div>
@@ -880,27 +871,27 @@ export class RussianBlockApp {
     this.dailyMenuSection.dataset.menuSectionPane = "daily";
     this.dailyMenuSection.innerHTML = `
       <div class="theme-showcase">
-        <span class="theme-showcase-label">Daily Challenge</span>
-        <strong>Same seed. Same clock. One clean target.</strong>
-        <p>Jump straight into today's fixed challenge and compare results after the run.</p>
+        <span class="theme-showcase-label">今日挑战</span>
+        <strong>同一种子，同一计时，同一目标。</strong>
+        <p>直接进入今天的固定挑战，结束后和别人比成绩。</p>
       </div>
       <div class="menu-history">
         <div class="menu-history-head">
-          <span class="theme-showcase-label">Launch</span>
+          <span class="theme-showcase-label">开始</span>
         </div>
         <div class="overlay-actions"></div>
       </div>
       <div class="menu-history">
         <div class="history-card history-card--lab">
           <div class="history-row history-row--static">
-            <strong>Daily refreshes by your local date</strong>
-            <span>Open it from any device and you'll get the same challenge for that date.</span>
+            <strong>每日挑战按本地日期刷新</strong>
+            <span>在任何设备上打开，都会拿到当天同一题。</span>
           </div>
         </div>
       </div>
     `;
     this.dailyLaunchButton = this.root.querySelector("#load-daily-btn");
-    this.dailyLaunchButton.textContent = "Open Daily Challenge";
+    this.dailyLaunchButton.textContent = "打开今日挑战";
     this.dailyMenuSection.querySelector(".overlay-actions").append(this.dailyLaunchButton);
 
     this.spectateMenuSection = document.createElement("section");
@@ -908,10 +899,10 @@ export class RussianBlockApp {
     this.spectateMenuSection.dataset.menuSectionPane = "spectate";
     const shareHeadLabel = shareHistoryBlock.querySelector(".theme-showcase-label");
     if (shareHeadLabel) {
-      shareHeadLabel.textContent = "Spectate / Advanced Share";
+      shareHeadLabel.textContent = "观战 / 高级分享";
     }
-    this.root.querySelector("#play-challenge-btn").textContent = "Open Challenge";
-    this.root.querySelector("#watch-shared-replay-btn").textContent = "Watch Replay";
+    this.root.querySelector("#play-challenge-btn").textContent = "开始挑战";
+    this.root.querySelector("#watch-shared-replay-btn").textContent = "观看回放";
     shareHistoryBlock.querySelector("#load-daily-btn")?.remove();
     this.spectateMenuSection.append(shareHistoryBlock);
 
@@ -920,9 +911,9 @@ export class RussianBlockApp {
     this.labsMenuSection.dataset.menuSectionPane = "labs";
     this.labsMenuSection.innerHTML = `
       <div class="theme-showcase">
-        <span class="theme-showcase-label">Advanced</span>
-        <strong>Shadow challenges and unstable rules live here.</strong>
-        <p>Use replay spectate and result screens for the easier path. Labs stays optional.</p>
+        <span class="theme-showcase-label">实验扩展</span>
+        <strong>影子挑战和实验规则都在这里。</strong>
+        <p>日常玩法走回放和结算入口就够了，实验玩法保持可选。</p>
       </div>
     `;
     this.shadowChallengeCard = document.createElement("div");
@@ -930,8 +921,8 @@ export class RussianBlockApp {
     this.shadowChallengeCard.innerHTML = `
       <div class="history-card history-card--lab">
         <div class="history-row history-row--static">
-          <strong>Shadow Challenge</strong>
-          <span>Race a saved Sprint or Ultra replay after your run instead of entering raw replay codes.</span>
+          <strong>影子挑战</strong>
+          <span>结束后直接挑战保存下来的冲刺或极限回放，不用手输回放码。</span>
         </div>
       </div>
     `;
@@ -951,8 +942,8 @@ export class RussianBlockApp {
     }
     if (this.settingsNote) {
       this.settingsNote.textContent = this.isDevMode
-        ? "Theme, mode, nickname, ghost preference, and the optional dev API base are stored locally."
-        : "Theme, mode, nickname, and ghost preference are stored locally. Online rooms and sharing use the built-in service.";
+        ? "主题、模式、昵称、落点虚影和可选开发接口地址都会保存在本机。"
+        : "主题、模式、昵称和落点虚影都会保存在本机。联机房间和分享功能会使用内置服务。";
     }
   }
 
@@ -962,68 +953,68 @@ export class RussianBlockApp {
     this.roomsMenuSection.dataset.menuSectionPane = "rooms";
     this.roomsMenuSection.innerHTML = `
       <div class="theme-showcase">
-        <span class="theme-showcase-label">Room Match</span>
-        <strong>Use a 6-digit room code or join a public room.</strong>
-        <p>Create a same-seed room for Sprint 40L or Ultra 120s, then compare the final result after both runs finish.</p>
+        <span class="theme-showcase-label">房间对战</span>
+        <strong>使用 6 位房间码，或直接加入公开房间。</strong>
+        <p>创建同种子房间，支持 40 行冲刺和 120 秒极限，结束后比较成绩。</p>
       </div>
       <div class="menu-history">
         <div class="menu-history-head">
-          <span class="theme-showcase-label">Create Room</span>
+          <span class="theme-showcase-label">创建房间</span>
         </div>
         <div class="settings-theme-grid ghost-config-grid room-mode-grid" id="room-mode-grid">
           ${buildRoomModeMarkup()}
         </div>
         <label class="toggle-row room-toggle-row">
-          <span>Show in public room list</span>
+          <span>显示在公开房间列表</span>
           <input type="checkbox" id="room-public-toggle" />
         </label>
         <div class="overlay-actions">
-          <button type="button" class="primary-btn" id="room-create-btn">Create Room</button>
+          <button type="button" class="primary-btn" id="room-create-btn">创建房间</button>
         </div>
       </div>
       <div class="menu-history">
         <div class="menu-history-head">
-          <span class="theme-showcase-label">Join With Code</span>
+          <span class="theme-showcase-label">输入房间码加入</span>
         </div>
         <label class="seed-field">
-          <span class="theme-showcase-label">6-digit room code</span>
+          <span class="theme-showcase-label">6 位房间码</span>
           <input type="text" id="room-code-input" inputmode="numeric" maxlength="${ROOM_CODE_LENGTH}" placeholder="482731" />
         </label>
         <div class="overlay-actions">
-          <button type="button" class="secondary-btn" id="room-join-btn">Join Room</button>
-          <button type="button" class="secondary-btn" id="room-refresh-btn">Refresh List</button>
+          <button type="button" class="secondary-btn" id="room-join-btn">加入房间</button>
+          <button type="button" class="secondary-btn" id="room-refresh-btn">刷新列表</button>
         </div>
       </div>
       <div class="menu-history menu-history--room room-lobby room-lobby--hidden" id="room-lobby">
         <div class="menu-history-head">
-          <span class="theme-showcase-label">Current Room</span>
-          <span class="room-status-pill" id="room-status-pill">Waiting</span>
+          <span class="theme-showcase-label">当前房间</span>
+          <span class="room-status-pill" id="room-status-pill">等待中</span>
         </div>
         <div class="watch-panel-grid room-lobby-grid" id="room-lobby-grid"></div>
         <div class="history-list" id="room-player-list"></div>
         <div class="overlay-actions">
-          <button type="button" class="secondary-btn menu-mini-btn" id="room-copy-code-btn">Copy Code</button>
-          <button type="button" class="secondary-btn menu-mini-btn" id="room-copy-link-btn">Copy Invite</button>
-          <button type="button" class="secondary-btn menu-mini-btn" id="room-ready-btn">Ready</button>
-          <button type="button" class="primary-btn menu-mini-btn" id="room-start-btn">Start</button>
-          <button type="button" class="secondary-btn menu-mini-btn" id="room-leave-btn">Leave</button>
+          <button type="button" class="secondary-btn menu-mini-btn" id="room-copy-code-btn">复制房间码</button>
+          <button type="button" class="secondary-btn menu-mini-btn" id="room-copy-link-btn">复制邀请链接</button>
+          <button type="button" class="secondary-btn menu-mini-btn" id="room-ready-btn">准备</button>
+          <button type="button" class="primary-btn menu-mini-btn" id="room-start-btn">开始</button>
+          <button type="button" class="secondary-btn menu-mini-btn" id="room-leave-btn">离开</button>
         </div>
         <div class="leaderboard-panel leaderboard-panel--hidden" id="room-result-panel">
           <div class="leaderboard-panel-head">
-            <strong id="room-result-title">Room Result</strong>
+            <strong id="room-result-title">房间结果</strong>
             <span id="room-result-status"></span>
           </div>
           <div class="leaderboard-list" id="room-result-list"></div>
           <div class="overlay-actions room-result-actions">
-            <button type="button" class="secondary-btn menu-mini-btn" id="room-rematch-btn">Rematch</button>
-            <button type="button" class="secondary-btn menu-mini-btn" id="room-winner-ghost-btn">Challenge Winner</button>
+            <button type="button" class="secondary-btn menu-mini-btn" id="room-rematch-btn">再来一局</button>
+            <button type="button" class="secondary-btn menu-mini-btn" id="room-winner-ghost-btn">挑战赢家影子</button>
           </div>
         </div>
       </div>
       <div class="menu-history">
         <div class="menu-history-head">
-          <span class="theme-showcase-label">Public Rooms</span>
-          <button type="button" class="secondary-btn menu-mini-btn" id="room-refresh-list-btn">Refresh</button>
+          <span class="theme-showcase-label">公开房间</span>
+          <button type="button" class="secondary-btn menu-mini-btn" id="room-refresh-list-btn">刷新</button>
         </div>
         <div class="spectate-speed-group room-filter-group" id="room-filter-group">
           ${buildRoomFilterMarkup()}
@@ -1079,21 +1070,21 @@ export class RussianBlockApp {
     this.roomBackButton.type = "button";
     this.roomBackButton.className = "secondary-btn";
     this.roomBackButton.id = "room-back-btn";
-    this.roomBackButton.textContent = "Back To Room";
+    this.roomBackButton.textContent = "回到房间";
     this.viewReplayPageButton.insertAdjacentElement("afterend", this.roomBackButton);
 
     this.roomReplayButton = document.createElement("button");
     this.roomReplayButton.type = "button";
     this.roomReplayButton.className = "secondary-btn";
     this.roomReplayButton.id = "room-replay-btn";
-    this.roomReplayButton.textContent = "Room Rematch";
+    this.roomReplayButton.textContent = "房间再来一局";
     this.roomBackButton.insertAdjacentElement("afterend", this.roomReplayButton);
 
     this.roomShadowButton = document.createElement("button");
     this.roomShadowButton.type = "button";
     this.roomShadowButton.className = "secondary-btn";
     this.roomShadowButton.id = "room-shadow-btn";
-    this.roomShadowButton.textContent = "Winner Shadow";
+    this.roomShadowButton.textContent = "赢家影子";
     this.roomReplayButton.insertAdjacentElement("afterend", this.roomShadowButton);
   }
 
@@ -1192,10 +1183,6 @@ export class RussianBlockApp {
       this.audio.setMuted(this.settings.muted);
       this.persistSettings();
     });
-    this.autostartToggle.addEventListener("change", () => {
-      this.settings.autoStartLastMode = this.autostartToggle.checked;
-      this.persistSettings();
-    });
     this.ghostToggle.addEventListener("change", () => {
       this.settings.ghostEnabled = this.ghostToggle.checked;
       this.persistSettings();
@@ -1210,7 +1197,7 @@ export class RussianBlockApp {
       this.settings.devApiBase = this.apiBaseInput.value.trim();
       this.apiClient = new RussianBlockApiClient(this.settings.devApiBase);
       this.persistSettings();
-      this.statusMessage = this.apiClient.configured ? "Developer API endpoint updated." : "Using the built-in local/offline mode.";
+      this.statusMessage = this.apiClient.configured ? "开发接口地址已更新。" : "当前使用内置本地 / 离线模式。";
       this.updateUiState();
     });
 
@@ -1325,10 +1312,10 @@ export class RussianBlockApp {
     this.ghostConfigTitle.textContent = buildGhostDuelLabel(this.selectedGhostDuelMode);
     this.ghostConfigCopy.textContent =
       this.selectedGhostSource === "shared_code"
-        ? "Fetch a remote replay, then launch a live duel on the same seed."
+        ? "读取远端回放后，会直接在同一种子上开始影子挑战。"
         : this.selectedGhostSource === "local_recent"
-          ? "Race the newest saved run for the selected ruleset."
-          : "Race your strongest saved run for the selected ruleset.";
+          ? "使用当前规则下最近保存的一局作为影子。"
+          : "使用当前规则下保存的最佳成绩作为影子。";
     this.ghostModeButtons.forEach((button) => {
       const active = button.dataset.ghostDuelMode === this.selectedGhostDuelMode;
       button.setAttribute("aria-pressed", String(active));
@@ -1341,11 +1328,11 @@ export class RussianBlockApp {
     this.ghostConfigStatus.textContent = ghostModeActive
       ? this.selectedGhostSource === "shared_code"
         ? this.ghostReplayCode
-          ? `Ready to fetch replay ${this.ghostReplayCode}.`
-          : "Enter a replay code to start Ghost Duel."
+          ? `已准备读取回放 ${this.ghostReplayCode}。`
+          : "输入回放码后即可开始影子挑战。"
         : previewReplay
-          ? `Ready: ${previewReplay.sourceLabel}`
-          : `No saved ${getModeDefinition(this.selectedGhostDuelMode).name} replay is available yet.`
+          ? `已准备：${previewReplay.sourceLabel}`
+          : `还没有可用的 ${getModeDefinition(this.selectedGhostDuelMode).name} 回放。`
       : "";
     this.root.querySelectorAll("[data-mode-card]").forEach((button) => {
       const active = button.dataset.modeCard === this.selectedGameMode;
@@ -1383,7 +1370,7 @@ export class RussianBlockApp {
       return {
         replay: latest.replay,
         sourceType: "local_recent",
-        sourceLabel: `Recent ${getModeDefinition(targetMode).name}`,
+        sourceLabel: `最近 ${getModeDefinition(targetMode).name}`,
       };
     }
 
@@ -1391,7 +1378,7 @@ export class RussianBlockApp {
     return {
       replay: best.replay,
       sourceType: "local_best",
-      sourceLabel: `Best ${getModeDefinition(targetMode).name}`,
+      sourceLabel: `最佳 ${getModeDefinition(targetMode).name}`,
     };
   }
 
@@ -1450,10 +1437,10 @@ export class RussianBlockApp {
 
   async ensureReplayShare(replay) {
     if (!replay) {
-      throw new Error("No replay is available.");
+      throw new Error("当前没有可用回放。");
     }
     if (!this.apiClient.configured) {
-      throw new Error("Share API is not configured.");
+      throw new Error("当前没有配置分享接口。");
     }
 
     const cached = this.getCachedReplayShare(replay);
@@ -1500,13 +1487,13 @@ export class RussianBlockApp {
   formatGoalCopy(goal = {}) {
     const parts = [];
     if (goal.score) {
-      parts.push(`Score ${formatScore(Number(goal.score) || 0)}`);
+      parts.push(`分数 ${formatScore(Number(goal.score) || 0)}`);
     }
     if (goal.lines) {
-      parts.push(`Lines ${Number(goal.lines) || 0}`);
+      parts.push(`消行 ${Number(goal.lines) || 0}`);
     }
     if (goal.durationMs) {
-      parts.push(`Time ${formatDuration(Number(goal.durationMs) || 0)}`);
+      parts.push(`时长 ${formatDuration(Number(goal.durationMs) || 0)}`);
     }
     return parts.join(" · ");
   }
@@ -1520,7 +1507,7 @@ export class RussianBlockApp {
     const checks = [];
     if (goal.score) {
       checks.push({
-        label: "Score",
+        label: "分数",
         target: Number(goal.score) || 0,
         actual: Number(runSummary.score) || 0,
         higherIsBetter: true,
@@ -1528,7 +1515,7 @@ export class RussianBlockApp {
     }
     if (goal.lines) {
       checks.push({
-        label: "Lines",
+        label: "消行",
         target: Number(goal.lines) || 0,
         actual: Number(runSummary.lines) || 0,
         higherIsBetter: true,
@@ -1536,7 +1523,7 @@ export class RussianBlockApp {
     }
     if (goal.durationMs) {
       checks.push({
-        label: "Time",
+        label: "时长",
         target: Number(goal.durationMs) || 0,
         actual: Number(runSummary.durationMs) || 0,
         higherIsBetter: false,
@@ -1560,10 +1547,10 @@ export class RussianBlockApp {
       summary,
       copy: summary
         .map((check) => {
-          if (check.label === "Time") {
-            return `${check.label} ${check.passed ? "faster" : "slower"} by ${formatDuration(Math.abs(check.delta))}`;
+          if (check.label === "时长") {
+            return `${check.label}${check.passed ? "领先" : "落后"} ${formatDuration(Math.abs(check.delta))}`;
           }
-          return `${check.label} ${check.passed ? "+" : "-"}${formatScore(Math.abs(check.delta))}`;
+          return `${check.label}${check.passed ? "+" : "-"}${formatScore(Math.abs(check.delta))}`;
         })
         .join(" · "),
     };
@@ -1766,7 +1753,7 @@ export class RussianBlockApp {
         currentRank: null,
       };
       this.remoteLeaderboardStatus = "error";
-      this.remoteLeaderboardError = error instanceof Error ? error.message : "Failed to load leaderboard.";
+      this.remoteLeaderboardError = error instanceof Error ? error.message : "加载排行榜失败。";
     }
 
     this.updateUiState();
@@ -1879,7 +1866,7 @@ export class RussianBlockApp {
     try {
       const response = await this.apiClient.submitRoom(roomCode, {
         playerToken,
-        nickname: this.getPlayerNickname("Player"),
+        nickname: this.getPlayerNickname("玩家"),
         replayCode,
         summary: {
           score: runSummary.score,
@@ -1891,10 +1878,10 @@ export class RussianBlockApp {
         },
       });
       this.setActiveRoom(response.room, playerToken);
-      this.statusMessage = `Room ${roomCode} result submitted.`;
+      this.statusMessage = `房间 ${roomCode} 的成绩已提交。`;
       await this.refreshPublicRooms();
     } catch (error) {
-      this.statusMessage = error instanceof Error ? error.message : "Failed to submit the room result.";
+      this.statusMessage = error instanceof Error ? error.message : "提交房间成绩失败。";
       this.updateUiState();
     }
   }
@@ -1914,7 +1901,7 @@ export class RussianBlockApp {
         status: "error",
         context,
       };
-      this.statusMessage = "分享 API 不可用，本局成绩未提交。";
+      this.statusMessage = "分享接口不可用，本局成绩未提交。";
       this.updateUiState();
       return;
     }
@@ -2104,30 +2091,30 @@ export class RussianBlockApp {
       durationMs: ghostEngine.elapsedMs,
     };
     const comparison = this.lastGhostResult ?? evaluateGhostRaceResult(duelMode, playerSnapshot, this.getGhostReplaySummary());
-    const sourceLabel = this.ghostSession.sourceLabel ?? "Replay Ghost";
+    const sourceLabel = this.ghostSession.sourceLabel ?? "回放影子";
 
     if (duelMode === "sprint") {
       const lineGap = (Number(playerSnapshot.lines) || 0) - (Number(ghostSnapshot.lines) || 0);
       const leadCopy =
         this.engine.mode === "completed" || this.engine.mode === "gameover" || this.ghostPlayer.finished
           ? comparison.outcome === "win"
-            ? `Ahead by ${formatGhostMetricValue(comparison.metric, Math.abs(comparison.ghostValue - comparison.playerValue))}`
+            ? `领先 ${formatGhostMetricValue(comparison.metric, Math.abs(comparison.ghostValue - comparison.playerValue))}`
             : comparison.outcome === "lose"
-              ? `Behind by ${formatGhostMetricValue(comparison.metric, Math.abs(comparison.ghostValue - comparison.playerValue))}`
-              : "Dead even"
+              ? `落后 ${formatGhostMetricValue(comparison.metric, Math.abs(comparison.ghostValue - comparison.playerValue))}`
+              : "完全持平"
           : lineGap === 0
-            ? "Neck and neck"
+            ? "势均力敌"
             : lineGap > 0
-              ? `Ahead ${lineGap} lines`
-              : `Behind ${Math.abs(lineGap)} lines`;
+              ? `领先 ${lineGap} 行`
+              : `落后 ${Math.abs(lineGap)} 行`;
       return {
         title: buildGhostDuelLabel(duelMode),
         sourceLabel,
         leadCopy,
-        progressCopy: `${playerSnapshot.lines}/40 · Ghost ${ghostSnapshot.lines}/40`,
+        progressCopy: `${playerSnapshot.lines}/40 · 影子 ${ghostSnapshot.lines}/40`,
         statusCopy: this.ghostPlayer.finished
-          ? `Ghost cleared in ${formatDuration(this.ghostSession.finishedAtMs ?? this.ghostSession.replay.durationMs)}`
-          : "Clear 40 lines before the ghost does.",
+          ? `影子用时 ${formatDuration(this.ghostSession.finishedAtMs ?? this.ghostSession.replay.durationMs)} 完成`
+          : "在影子之前完成 40 行。",
       };
     }
 
@@ -2135,23 +2122,23 @@ export class RussianBlockApp {
     const leadCopy =
       this.engine.mode === "completed" || this.engine.mode === "gameover"
         ? comparison.outcome === "win"
-          ? `Ahead by ${formatGhostMetricValue(comparison.metric, Math.abs(comparison.ghostValue - comparison.playerValue))}`
+          ? `领先 ${formatGhostMetricValue(comparison.metric, Math.abs(comparison.ghostValue - comparison.playerValue))}`
           : comparison.outcome === "lose"
-            ? `Behind by ${formatGhostMetricValue(comparison.metric, Math.abs(comparison.ghostValue - comparison.playerValue))}`
-            : "Dead even"
+            ? `落后 ${formatGhostMetricValue(comparison.metric, Math.abs(comparison.ghostValue - comparison.playerValue))}`
+            : "完全持平"
         : scoreGap === 0
-          ? "Scores tied"
+          ? "分数持平"
           : scoreGap > 0
-            ? `Ahead ${formatScore(scoreGap)} pts`
-            : `Behind ${formatScore(Math.abs(scoreGap))} pts`;
+            ? `领先 ${formatScore(scoreGap)} 分`
+            : `落后 ${formatScore(Math.abs(scoreGap))} 分`;
     return {
       title: buildGhostDuelLabel(duelMode),
       sourceLabel,
       leadCopy,
-      progressCopy: `${formatTimer(this.engine.remainingMs)} left · Ghost ${formatScore(ghostSnapshot.score)} pts`,
+      progressCopy: `剩余 ${formatTimer(this.engine.remainingMs)} · 影子 ${formatScore(ghostSnapshot.score)} 分`,
       statusCopy: this.ghostPlayer.finished
-        ? `Ghost finished with ${formatScore(this.getGhostReplaySummary()?.score ?? 0)}`
-        : "Outscore the ghost before the clock runs out.",
+        ? `影子最终得分 ${formatScore(this.getGhostReplaySummary()?.score ?? 0)}`
+        : "在倒计时结束前超过影子的分数。",
     };
   }
 
@@ -2173,7 +2160,7 @@ export class RussianBlockApp {
 
     const resolved = this.resolveGhostMenuReplay();
     if (!resolved?.replay) {
-      this.statusMessage = `No saved ${getModeDefinition(this.selectedGhostDuelMode).name} replay is available yet.`;
+      this.statusMessage = `还没有可用的 ${getModeDefinition(this.selectedGhostDuelMode).name} 回放。`;
       this.updateUiState();
       return;
     }
@@ -2184,12 +2171,12 @@ export class RussianBlockApp {
   async openGhostRaceFromCode(code) {
     const normalizedCode = String(code ?? "").trim();
     if (!normalizedCode) {
-      this.statusMessage = "Enter a replay code first.";
+      this.statusMessage = "请先输入回放码。";
       this.updateUiState();
       return false;
     }
     if (!this.apiClient.configured) {
-      this.statusMessage = "Online sharing is unavailable right now.";
+      this.statusMessage = "当前无法使用在线分享。";
       this.updateUiState();
       return false;
     }
@@ -2198,7 +2185,7 @@ export class RussianBlockApp {
       const response = await this.apiClient.getReplay(normalizedCode);
       const replay = response.replay ?? response;
       if (!isGhostReplaySupported(replay)) {
-        this.statusMessage = "Ghost Duel only supports Sprint / Ultra replays.";
+        this.statusMessage = "影子挑战只支持冲刺 40 行和极限 120 秒回放。";
         this.updateUiState();
         return false;
       }
@@ -2211,11 +2198,11 @@ export class RussianBlockApp {
       this.ghostReplayCode = normalizedCode;
       return this.startGhostRaceFromReplay(replay, {
         sourceType: "shared_code",
-        sourceLabel: `Replay ${normalizedCode}`,
+        sourceLabel: `回放 ${normalizedCode}`,
         replayCode: normalizedCode,
       });
     } catch (error) {
-      this.statusMessage = error instanceof Error ? error.message : "Failed to load ghost replay.";
+      this.statusMessage = error instanceof Error ? error.message : "载入影子回放失败。";
       this.updateUiState();
       return false;
     }
@@ -2223,14 +2210,14 @@ export class RussianBlockApp {
 
   async startGhostRaceFromReplay(replay, options = {}) {
     if (!replay) {
-      this.statusMessage = "No replay is available.";
+      this.statusMessage = "当前没有可用回放。";
       this.updateUiState();
       return false;
     }
 
     const duelMode = resolveGhostReplayMode(replay);
     if (!duelMode) {
-      this.statusMessage = "Ghost Duel only supports Sprint / Ultra.";
+      this.statusMessage = "影子挑战只支持冲刺 40 行和极限 120 秒。";
       this.updateUiState();
       return false;
     }
@@ -2262,7 +2249,7 @@ export class RussianBlockApp {
     this.ghostPlayer = new ReplayPlayer(replay);
     this.ghostSession = {
       sourceType: options.sourceType ?? "local_best",
-      sourceLabel: options.sourceLabel ?? `Replay ${replay.replayId ?? replay.seed}`,
+      sourceLabel: options.sourceLabel ?? `回放 ${replay.replayId ?? replay.seed}`,
       replayCode: options.replayCode ?? this.getCachedReplayShare(replay)?.code ?? "",
       replayId: replay.replayId ?? options.replayId ?? "",
       replay,
@@ -2273,7 +2260,7 @@ export class RussianBlockApp {
     this.lastGhostResult = null;
     this.syncGhostSession();
     this.audio.play("click");
-    this.statusMessage = `Ghost Duel ready against ${this.ghostSession.sourceLabel}.`;
+    this.statusMessage = `影子挑战已准备就绪，对手是 ${this.ghostSession.sourceLabel}。`;
     this.afterStateChange();
     return true;
   }
@@ -2292,19 +2279,19 @@ export class RussianBlockApp {
 
     return this.startGhostRaceFromReplay(replay, {
       sourceType: "local_recent",
-      sourceLabel: "Current Replay",
+      sourceLabel: "当前回放",
       replayCode: this.spectateSession?.code ?? "",
     });
   }
 
   async shareHighlightForReplay(replay) {
     if (!replay) {
-      this.statusMessage = "No replay is available.";
+      this.statusMessage = "当前没有可用回放。";
       this.updateUiState();
       return null;
     }
     if (!this.apiClient.configured) {
-      this.statusMessage = "Online sharing is unavailable right now.";
+      this.statusMessage = "当前无法使用在线分享。";
       this.updateUiState();
       return null;
     }
@@ -2314,11 +2301,11 @@ export class RussianBlockApp {
       const marker = pickHighlightMarker(replay);
       const url = this.buildReplayShareUrl(share.code, marker.at);
       await this.copyTextToClipboard(url);
-      this.statusMessage = `Highlight link copied at ${formatDuration(marker.at)}.`;
+      this.statusMessage = `高光链接已复制，时间点 ${formatDuration(marker.at)}。`;
       this.updateUiState();
       return url;
     } catch (error) {
-      this.statusMessage = error instanceof Error ? error.message : "Failed to share highlight.";
+      this.statusMessage = error instanceof Error ? error.message : "分享高光失败。";
       this.updateUiState();
       return null;
     }
@@ -2362,7 +2349,7 @@ export class RussianBlockApp {
     }
     this.startReplay(this.lastReplay, {
       title: "本局回放",
-      subtitle: `${getModeDefinition(this.lastReplay.mode).label} · Seed ${this.lastReplay.seed}`,
+      subtitle: `${getModeDefinition(this.lastReplay.mode).label} · 种子 ${this.lastReplay.seed}`,
     });
   }
 
@@ -2406,7 +2393,7 @@ export class RussianBlockApp {
     const localPayload = JSON.stringify(replay);
     if (!this.apiClient.configured) {
       await this.copyTextToClipboard(localPayload);
-      this.statusMessage = "分享 API 未配置，已尝试把回放 JSON 复制到剪贴板。";
+      this.statusMessage = "分享接口未配置，已尝试把回放数据复制到剪贴板。";
       this.updateUiState();
       return;
     }
@@ -2429,7 +2416,7 @@ export class RussianBlockApp {
 
     if (!this.apiClient.configured) {
       await this.copyTextToClipboard(JSON.stringify(replay));
-      this.statusMessage = "Replay JSON copied to the clipboard.";
+    this.statusMessage = "回放数据已复制到剪贴板。";
       this.updateUiState();
       return;
     }
@@ -2437,16 +2424,16 @@ export class RussianBlockApp {
     try {
       const response = await this.ensureReplayShare(replay);
       await this.copyTextToClipboard(response.url ?? response.code ?? "");
-      this.statusMessage = `Replay link copied: ${response.code}`;
+      this.statusMessage = `回放链接已复制：${response.code}`;
     } catch (error) {
-      this.statusMessage = error instanceof Error ? error.message : "Failed to copy replay link.";
+      this.statusMessage = error instanceof Error ? error.message : "复制回放链接失败。";
     }
     this.updateUiState();
   }
 
   async openSharedReplayPageForReplay(replay) {
     if (!replay) {
-      this.statusMessage = "No replay is available.";
+      this.statusMessage = "当前没有可用回放。";
       this.updateUiState();
       return;
     }
@@ -2459,9 +2446,9 @@ export class RussianBlockApp {
         window.location.assign(url);
         return;
       }
-      this.statusMessage = `Replay page ready: ${response.code}`;
+      this.statusMessage = `回放页已就绪：${response.code}`;
     } catch (error) {
-      this.statusMessage = error instanceof Error ? error.message : "Failed to open replay page.";
+      this.statusMessage = error instanceof Error ? error.message : "打开回放页失败。";
     }
     this.updateUiState();
   }
@@ -2529,7 +2516,7 @@ export class RussianBlockApp {
         if (navigator.canShare({ files: [file] })) {
           await navigator.share({
             title: shareTitle,
-            text: "Russian Block 成绩卡",
+            text: "俄罗斯方块战绩卡",
             files: [file],
           });
           this.statusMessage = "成绩卡已调起系统分享。";
@@ -2546,7 +2533,7 @@ export class RussianBlockApp {
       anchor.click();
       anchor.remove();
       window.setTimeout(() => URL.revokeObjectURL(objectUrl), 2000);
-      this.statusMessage = "成绩卡已导出为 PNG。";
+        this.statusMessage = "战绩卡已导出。";
     } catch (error) {
       this.statusMessage = error instanceof Error ? error.message : "生成成绩卡失败。";
     }
@@ -2560,8 +2547,8 @@ export class RussianBlockApp {
       return;
     }
     await this.shareResultCard(runSummary);
-    if (this.statusMessage.includes("PNG") || this.statusMessage.includes("分享")) {
-      this.statusMessage = "Replay share card exported.";
+      if (this.statusMessage.includes("战绩卡") || this.statusMessage.includes("分享")) {
+      this.statusMessage = "回放战绩卡已导出。";
       this.updateUiState();
     }
   }
@@ -2574,7 +2561,7 @@ export class RussianBlockApp {
     canvas.height = height;
     const ctx = canvas.getContext("2d");
     if (!ctx) {
-      throw new Error("Share card canvas is unavailable.");
+      throw new Error("成绩卡画布不可用。");
     }
 
     const submission = this.getSubmissionForRun(runSummary);
@@ -2623,7 +2610,7 @@ export class RussianBlockApp {
 
     ctx.fillStyle = this.theme.canvas.textPrimary;
     ctx.font = "700 82px 'Trebuchet MS', 'Segoe UI', sans-serif";
-    ctx.fillText("Russian Block", 128, 230);
+    ctx.fillText("俄罗斯方块", 128, 230);
 
     ctx.fillStyle = this.theme.canvas.accentSoft;
     ctx.font = "700 34px 'Trebuchet MS', 'Segoe UI', sans-serif";
@@ -2631,27 +2618,27 @@ export class RussianBlockApp {
 
     ctx.fillStyle = this.theme.canvas.textMuted;
     ctx.font = "600 28px 'Trebuchet MS', 'Segoe UI', sans-serif";
-    ctx.fillText(runSummary.outcome === "completed" ? "Completed Run" : "Score Run", 132, 344);
+    ctx.fillText(runSummary.outcome === "completed" ? "完成战绩" : "得分战绩", 132, 344);
 
     ctx.fillStyle = this.theme.canvas.textMuted;
     ctx.font = "600 26px 'Trebuchet MS', 'Segoe UI', sans-serif";
-    ctx.fillText("Score", 132, 448);
+    ctx.fillText("分数", 132, 448);
     ctx.fillStyle = this.theme.canvas.textPrimary;
     ctx.font = "700 156px 'Trebuchet MS', 'Segoe UI', sans-serif";
     ctx.fillText(formatScore(runSummary.score), 128, 590);
 
-    this.drawShareCardStat(ctx, 128, 680, 292, 154, runSummary.lines, "Lines");
-    this.drawShareCardStat(ctx, 454, 680, 292, 154, formatDuration(runSummary.durationMs), "Duration");
-    this.drawShareCardStat(ctx, 780, 680, 292, 154, runSummary.combo, "Best Combo");
+    this.drawShareCardStat(ctx, 128, 680, 292, 154, runSummary.lines, "消行");
+    this.drawShareCardStat(ctx, 454, 680, 292, 154, formatDuration(runSummary.durationMs), "时长");
+    this.drawShareCardStat(ctx, 780, 680, 292, 154, runSummary.combo, "最佳连击");
 
-    this.drawShareCardStat(ctx, 128, 870, 438, 154, this.theme.name, "Theme");
-    this.drawShareCardStat(ctx, 600, 870, 472, 154, runSummary.seed || "AUTO", "Seed");
+    this.drawShareCardStat(ctx, 128, 870, 438, 154, this.theme.name, "主题");
+    this.drawShareCardStat(ctx, 600, 870, 472, 154, runSummary.seed || "自动", "种子");
 
     if (submission) {
       const badgeText =
         submission.context.type === "daily"
-          ? `Daily ${submission.context.date}`
-          : `Challenge ${submission.context.code}`;
+          ? `今日挑战 ${submission.context.date}`
+          : `挑战 ${submission.context.code}`;
       ctx.fillStyle = "rgba(255, 255, 255, 0.08)";
       fillRoundedRect(ctx, 128, 1080, 944, 94, 28);
       ctx.fillStyle = this.theme.canvas.accentSoft;
@@ -2660,7 +2647,7 @@ export class RussianBlockApp {
       ctx.fillStyle = this.theme.canvas.textMuted;
       ctx.font = "600 24px 'Trebuchet MS', 'Segoe UI', sans-serif";
       ctx.fillText(
-        submission.status === "success" ? "Submission synced" : "Submission pending",
+        submission.status === "success" ? "成绩已同步" : "等待同步",
         160,
         1108
       );
@@ -2668,7 +2655,7 @@ export class RussianBlockApp {
 
     ctx.fillStyle = this.theme.canvas.textMuted;
     ctx.font = "600 28px 'Trebuchet MS', 'Segoe UI', sans-serif";
-    ctx.fillText("Play the same board in your browser", 132, 1340);
+    ctx.fillText("打开链接即可挑战同一题面", 132, 1340);
     ctx.fillStyle = this.theme.canvas.textPrimary;
     ctx.font = "700 34px 'Trebuchet MS', 'Segoe UI', sans-serif";
     ctx.fillText(pageUrl, 132, 1398);
@@ -2676,14 +2663,14 @@ export class RussianBlockApp {
     ctx.fillStyle = this.theme.canvas.footer;
     ctx.font = "600 24px 'Trebuchet MS', 'Segoe UI', sans-serif";
     ctx.fillText(
-      `Best ${formatScore(this.engine.bestScore)} · Level ${runSummary.level} · ${new Date(runSummary.createdAt).toLocaleDateString("zh-CN")}`,
+      `最高分 ${formatScore(this.engine.bestScore)} · 等级 ${runSummary.level} · ${new Date(runSummary.createdAt).toLocaleDateString("zh-CN")}`,
       132,
       1490
     );
 
     const blob = await new Promise((resolve) => canvas.toBlob(resolve, "image/png"));
     if (!blob) {
-      throw new Error("Failed to export share card.");
+      throw new Error("导出战绩卡失败。");
     }
 
     return {
@@ -2694,12 +2681,12 @@ export class RussianBlockApp {
 
   async createChallengeFromReplay(replay, runSummary = this.buildRunSummaryFromReplay(replay)) {
     if (!replay || !runSummary) {
-      this.statusMessage = "Finish a run before creating a challenge.";
+      this.statusMessage = "请先完成一局，再生成挑战。";
       this.updateUiState();
       return null;
     }
     if (!this.apiClient.configured) {
-      this.statusMessage = "Online sharing is unavailable right now.";
+      this.statusMessage = "当前无法使用在线分享。";
       this.updateUiState();
       return null;
     }
@@ -2720,15 +2707,15 @@ export class RussianBlockApp {
           lines: runSummary.lines,
           durationMs: runSummary.durationMs,
         },
-        title: `${runSummary.label} Challenge`,
+        title: `${runSummary.label} 挑战`,
       });
       const url = challengeResponse.url ?? this.buildChallengeShareUrl(challengeResponse.code);
       await this.copyTextToClipboard(url);
-      this.statusMessage = `Challenge ready: ${challengeResponse.code}`;
+      this.statusMessage = `挑战已生成：${challengeResponse.code}`;
       this.updateUiState();
       return challengeResponse;
     } catch (error) {
-      this.statusMessage = error instanceof Error ? error.message : "Failed to create challenge.";
+      this.statusMessage = error instanceof Error ? error.message : "生成挑战失败。";
       this.updateUiState();
       return null;
     }
@@ -2742,7 +2729,7 @@ export class RussianBlockApp {
       return;
     }
     if (!this.apiClient.configured) {
-      this.statusMessage = "Online challenge sharing is unavailable right now.";
+      this.statusMessage = "当前无法使用在线挑战分享。";
       this.updateUiState();
       return;
     }
@@ -2765,7 +2752,7 @@ export class RussianBlockApp {
         challengeResponse.url ??
         `${window.location.origin}${window.location.pathname}?play=challenge&code=${challengeResponse.code}`;
       await navigator.clipboard?.writeText(url).catch(() => {});
-      this.statusMessage = `挑战已生成，链接已尝试复制。code: ${challengeResponse.code}`;
+      this.statusMessage = `挑战已生成，已尝试复制链接。挑战码：${challengeResponse.code}`;
     } catch (error) {
       this.statusMessage = error instanceof Error ? error.message : "生成挑战失败。";
     }
@@ -2788,7 +2775,7 @@ export class RussianBlockApp {
       return;
     }
     if (!this.apiClient.configured) {
-      this.statusMessage = "当前没有配置分享 API。";
+      this.statusMessage = "当前没有配置分享接口。";
       this.updateUiState();
       return;
     }
@@ -2824,7 +2811,7 @@ export class RussianBlockApp {
       return;
     }
     if (!this.apiClient.configured) {
-      this.statusMessage = "当前没有配置分享 API。";
+      this.statusMessage = "当前没有配置分享接口。";
       this.updateUiState();
       return;
     }
@@ -2843,7 +2830,7 @@ export class RussianBlockApp {
       this.startReplay(replay, {
         startAtMs: Number(options.startAtMs) || 0,
         title: `分享回放 ${normalizedCode}`,
-        subtitle: `${getModeDefinition(replay.mode).label} · Seed ${replay.seed}`,
+        subtitle: `${getModeDefinition(replay.mode).label} · 种子 ${replay.seed}`,
         watchSession: {
           code: normalizedCode,
           replay,
@@ -2861,7 +2848,7 @@ export class RussianBlockApp {
 
   async loadDailyChallenge() {
     if (!this.apiClient.configured) {
-      this.statusMessage = "当前没有配置分享 API。";
+      this.statusMessage = "当前没有配置分享接口。";
       this.updateUiState();
       return;
     }
@@ -2946,9 +2933,9 @@ export class RussianBlockApp {
               type="button"
               class="secondary-btn menu-mini-btn"
               data-history-ghost="${run.replayId}"
-              ${canRace ? "" : 'disabled title="Ghost Duel only supports Sprint / Ultra"'}
+              ${canRace ? "" : 'disabled title="影子挑战仅支持冲刺 40 行和极限 120 秒"'}
             >
-              Race
+              挑战影子
             </button>
           </div>
         `;
@@ -2961,7 +2948,7 @@ export class RussianBlockApp {
         if (replay) {
           this.startReplay(replay, {
             title: "历史回放",
-            subtitle: `${getModeDefinition(replay.mode).label} · Seed ${replay.seed}`,
+            subtitle: `${getModeDefinition(replay.mode).label} · 种子 ${replay.seed}`,
           });
         }
       });
@@ -2971,7 +2958,7 @@ export class RussianBlockApp {
         const replay = getReplayForRun(this.profile, button.dataset.historyGhost);
         void this.startGhostRaceFromReplay(replay, {
           sourceType: "local_recent",
-          sourceLabel: "Recent Replay",
+          sourceLabel: "最近回放",
         });
       });
     });
@@ -2994,7 +2981,7 @@ export class RussianBlockApp {
     void this.refreshPublicRooms();
   }
 
-  getPlayerNickname(fallback = "Anonymous") {
+  getPlayerNickname(fallback = "未命名玩家") {
     const nickname = String(this.settings.nickname ?? "").trim().slice(0, 24);
     return nickname || fallback;
   }
@@ -3061,7 +3048,7 @@ export class RussianBlockApp {
       });
       this.setActiveRoom(response.room, playerToken || response.room?.viewer?.playerToken);
     } catch (error) {
-      this.statusMessage = error instanceof Error ? error.message : "Failed to refresh the room.";
+      this.statusMessage = error instanceof Error ? error.message : "刷新房间失败。";
       this.updateUiState();
     } finally {
       if (this.activeRoom) {
@@ -3141,7 +3128,7 @@ export class RussianBlockApp {
       seed: this.roomMatch.seed,
     });
     this.scheduleRoomPoll(3200);
-    this.statusMessage = `Room ${room.code} started.`;
+    this.statusMessage = `房间 ${room.code} 已开始。`;
     this.updateUiState();
   }
 
@@ -3149,7 +3136,7 @@ export class RussianBlockApp {
     if (!this.apiClient.configured) {
       this.publicRooms = [];
       this.publicRoomsStatus = "error";
-      this.publicRoomsError = "Online rooms are unavailable right now.";
+      this.publicRoomsError = "当前无法使用联机房间。";
       this.updateUiState();
       return;
     }
@@ -3167,7 +3154,7 @@ export class RussianBlockApp {
     } catch (error) {
       this.publicRooms = [];
       this.publicRoomsStatus = "error";
-      this.publicRoomsError = error instanceof Error ? error.message : "Failed to load rooms.";
+      this.publicRoomsError = error instanceof Error ? error.message : "加载房间失败。";
     }
 
     this.updateUiState();
@@ -3175,7 +3162,7 @@ export class RussianBlockApp {
 
   async createRoom() {
     if (!this.apiClient.configured) {
-      this.statusMessage = "Online rooms are unavailable right now.";
+      this.statusMessage = "当前无法使用联机房间。";
       this.updateUiState();
       return;
     }
@@ -3184,15 +3171,15 @@ export class RussianBlockApp {
       const response = await this.apiClient.createRoom({
         mode: this.selectedRoomMode,
         isPublic: this.roomPublicToggle.checked,
-        nickname: this.getPlayerNickname("Host"),
+        nickname: this.getPlayerNickname("房主"),
       });
       this.roomCodeInput.value = sanitizeRoomCode(response.room?.code);
       this.setMenuSection("rooms");
       this.setActiveRoom(response.room, response.playerToken);
-      this.statusMessage = `Room ${response.room.code} created.`;
+      this.statusMessage = `房间 ${response.room.code} 已创建。`;
       await this.refreshPublicRooms();
     } catch (error) {
-      this.statusMessage = error instanceof Error ? error.message : "Failed to create the room.";
+      this.statusMessage = error instanceof Error ? error.message : "创建房间失败。";
       this.updateUiState();
     }
   }
@@ -3202,13 +3189,13 @@ export class RussianBlockApp {
     this.roomCodeInput.value = normalizedCode;
     if (normalizedCode.length !== ROOM_CODE_LENGTH) {
       if (!silent) {
-        this.statusMessage = "Enter a valid 6-digit room code.";
+        this.statusMessage = "请输入有效的 6 位房间码。";
         this.updateUiState();
       }
       return false;
     }
     if (!this.apiClient.configured) {
-      this.statusMessage = "Online rooms are unavailable right now.";
+      this.statusMessage = "当前无法使用联机房间。";
       this.updateUiState();
       return false;
     }
@@ -3216,17 +3203,17 @@ export class RussianBlockApp {
     const playerToken = this.getStoredRoomToken(normalizedCode);
     try {
       const response = await this.apiClient.joinRoom(normalizedCode, {
-        nickname: this.getPlayerNickname(playerToken ? "Player" : "Guest"),
+        nickname: this.getPlayerNickname(playerToken ? "玩家" : "访客"),
         playerToken: playerToken || undefined,
       });
       this.setMenuSection("rooms");
       this.setActiveRoom(response.room, response.playerToken);
-      this.statusMessage = `Joined room ${normalizedCode}.`;
+      this.statusMessage = `已加入房间 ${normalizedCode}。`;
       await this.refreshPublicRooms();
       return true;
     } catch (error) {
       if (!silent) {
-        this.statusMessage = error instanceof Error ? error.message : "Failed to join the room.";
+        this.statusMessage = error instanceof Error ? error.message : "加入房间失败。";
         this.updateUiState();
       }
       return false;
@@ -3237,7 +3224,7 @@ export class RussianBlockApp {
     const normalizedCode = sanitizeRoomCode(code);
     this.setMenuSection("rooms");
     if (!normalizedCode) {
-      this.statusMessage = "Missing room code.";
+      this.statusMessage = "缺少房间码。";
       this.updateUiState();
       return;
     }
@@ -3248,7 +3235,7 @@ export class RussianBlockApp {
     }
 
     if (!this.apiClient.configured) {
-      this.statusMessage = "Online rooms are unavailable right now.";
+      this.statusMessage = "当前无法使用联机房间。";
       this.updateUiState();
       return;
     }
@@ -3258,9 +3245,9 @@ export class RussianBlockApp {
         playerToken: this.getStoredRoomToken(normalizedCode) || undefined,
       });
       this.setActiveRoom(response.room, response.room?.viewer?.playerToken ?? this.getStoredRoomToken(normalizedCode));
-      this.statusMessage = `Room ${normalizedCode} loaded.`;
+      this.statusMessage = `房间 ${normalizedCode} 已载入。`;
     } catch (error) {
-      this.statusMessage = error instanceof Error ? error.message : "Failed to load the room.";
+      this.statusMessage = error instanceof Error ? error.message : "载入房间失败。";
       this.updateUiState();
     }
   }
@@ -3285,11 +3272,11 @@ export class RussianBlockApp {
         this.activeRoom = response.room;
       }
       this.clearRoomState();
-      this.statusMessage = `Left room ${roomCode}.`;
+      this.statusMessage = `已离开房间 ${roomCode}。`;
       await this.refreshPublicRooms();
       this.updateUiState();
     } catch (error) {
-      this.statusMessage = error instanceof Error ? error.message : "Failed to leave the room.";
+      this.statusMessage = error instanceof Error ? error.message : "离开房间失败。";
       this.updateUiState();
     }
   }
@@ -3306,7 +3293,7 @@ export class RussianBlockApp {
       });
       this.setActiveRoom(response.room);
     } catch (error) {
-      this.statusMessage = error instanceof Error ? error.message : "Failed to update ready state.";
+      this.statusMessage = error instanceof Error ? error.message : "更新准备状态失败。";
       this.updateUiState();
     }
   }
@@ -3322,7 +3309,7 @@ export class RussianBlockApp {
       });
       this.setActiveRoom(response.room);
     } catch (error) {
-      this.statusMessage = error instanceof Error ? error.message : "Failed to start the room.";
+      this.statusMessage = error instanceof Error ? error.message : "开始房间失败。";
       this.updateUiState();
     }
   }
@@ -3338,10 +3325,10 @@ export class RussianBlockApp {
       this.roomResult = null;
       this.lastRoomSubmissionRunId = "";
       this.setActiveRoom(response.room);
-      this.statusMessage = `Room ${this.activeRoom.code} is ready for a rematch.`;
+      this.statusMessage = `房间 ${this.activeRoom.code} 已准备好再来一局。`;
       await this.refreshPublicRooms();
     } catch (error) {
-      this.statusMessage = error instanceof Error ? error.message : "Failed to create a rematch.";
+      this.statusMessage = error instanceof Error ? error.message : "创建再来一局失败。";
       this.updateUiState();
     }
   }
@@ -3350,7 +3337,7 @@ export class RussianBlockApp {
     this.returnToMenu();
     if (this.activeRoom) {
       this.setMenuSection("rooms");
-      this.statusMessage = `Back in room ${this.activeRoom.code}.`;
+      this.statusMessage = `已回到房间 ${this.activeRoom.code}。`;
       this.updateUiState();
     }
   }
@@ -3360,7 +3347,7 @@ export class RussianBlockApp {
       return;
     }
     await this.copyTextToClipboard(this.activeRoom.code);
-    this.statusMessage = `Room code ${this.activeRoom.code} copied.`;
+    this.statusMessage = `房间码 ${this.activeRoom.code} 已复制。`;
     this.updateUiState();
   }
 
@@ -3369,7 +3356,7 @@ export class RussianBlockApp {
       return;
     }
     await this.copyTextToClipboard(this.getRoomInviteUrl(this.activeRoom.code));
-    this.statusMessage = `Invite link for room ${this.activeRoom.code} copied.`;
+    this.statusMessage = `房间 ${this.activeRoom.code} 的邀请链接已复制。`;
     this.updateUiState();
   }
 
@@ -3381,7 +3368,7 @@ export class RussianBlockApp {
     const winner = evaluateRoomWinner(room.mode, room.results);
     const winnerReplayCode = winner?.ordered?.[0]?.replayCode ?? null;
     if (!winnerReplayCode) {
-      this.statusMessage = "The winning run does not have a saved replay yet.";
+      this.statusMessage = "赢家这一局还没有可用回放。";
       this.updateUiState();
       return;
     }
@@ -3394,7 +3381,7 @@ export class RussianBlockApp {
     if (!room) {
       this.roomLobbyGrid.innerHTML = "";
       this.roomPlayerList.innerHTML = "";
-      this.roomStatusPill.textContent = "Waiting";
+      this.roomStatusPill.textContent = "等待中";
       this.roomResultPanel.classList.add("leaderboard-panel--hidden");
       return;
     }
@@ -3407,31 +3394,31 @@ export class RussianBlockApp {
 
     this.roomStatusPill.textContent = getRoomStatusCopy(room);
     this.roomLobbyGrid.innerHTML = `
-      <div class="watch-panel-chip"><strong>${safeText(room.code)}</strong><span>Code</span></div>
-      <div class="watch-panel-chip"><strong>${safeText(getRoomModeLabel(room.mode))}</strong><span>Mode</span></div>
-      <div class="watch-panel-chip"><strong>${safeText(summarizeRoomProgress(room))}</strong><span>Status</span></div>
-      <div class="watch-panel-chip"><strong>${safeText(room.seed || "AUTO")}</strong><span>Seed</span></div>
+      <div class="watch-panel-chip"><strong>${safeText(room.code)}</strong><span>房间码</span></div>
+      <div class="watch-panel-chip"><strong>${safeText(getRoomModeLabel(room.mode))}</strong><span>模式</span></div>
+      <div class="watch-panel-chip"><strong>${safeText(summarizeRoomProgress(room))}</strong><span>状态</span></div>
+      <div class="watch-panel-chip"><strong>${safeText(room.seed || "自动")}</strong><span>种子</span></div>
     `;
     this.roomPlayerList.innerHTML = (room.players ?? [])
       .map((player) => {
         const labels = [];
         if (player.isHost) {
-          labels.push("Host");
+          labels.push("房主");
         }
         if (player.ready) {
-          labels.push("Ready");
+          labels.push("已准备");
         }
         if (viewer?.slot === player.slot) {
-          labels.push("You");
+          labels.push("你");
         }
         return `
           <div class="leaderboard-row${viewer?.slot === player.slot ? " leaderboard-row--active" : ""}">
             <span class="leaderboard-rank">#${player.slot}</span>
             <div class="leaderboard-copy">
               <strong>${safeText(player.nickname)}</strong>
-              <span>${safeText(labels.join(" · ") || "Joined")}</span>
+              <span>${safeText(labels.join(" · ") || "已加入")}</span>
             </div>
-            <span class="leaderboard-score">${player.ready ? "OK" : "--"}</span>
+            <span class="leaderboard-score">${player.ready ? "已就绪" : "--"}</span>
           </div>
         `;
       })
@@ -3440,7 +3427,7 @@ export class RussianBlockApp {
     this.roomCopyCodeButton.disabled = false;
     this.roomCopyLinkButton.disabled = false;
     this.roomReadyButton.disabled = !viewer || room.expired || room.status === "finished" || room.status === "playing";
-    this.roomReadyButton.textContent = viewer?.ready ? "Unready" : "Ready";
+    this.roomReadyButton.textContent = viewer?.ready ? "取消准备" : "准备";
     this.roomStartButton.hidden = !viewer?.isHost;
     this.roomStartButton.disabled = !viewer?.isHost || !allReady || room.status === "playing" || room.status === "finished";
     this.roomLeaveButton.disabled = !viewer;
@@ -3450,22 +3437,22 @@ export class RussianBlockApp {
     if (showResult) {
       const viewerWon = winner?.winnerSlot !== null && winner?.winnerSlot === viewer?.slot;
       this.roomResultTitle.textContent =
-        winner?.winnerSlot === null ? "Round Draw" : viewerWon ? "You Won The Room" : "Room Finished";
-      this.roomResultStatus.textContent = `Round ${room.roundNumber}`;
+        winner?.winnerSlot === null ? "本局平局" : viewerWon ? "你赢下了这一局" : "房间对局结束";
+      this.roomResultStatus.textContent = `第 ${room.roundNumber} 局`;
       this.roomResultList.innerHTML = (winner?.ordered ?? room.results)
         .map((entry, index) => `
           <div class="leaderboard-row${viewer?.slot === entry.slot ? " leaderboard-row--active" : ""}">
             <span class="leaderboard-rank">#${index + 1}</span>
             <div class="leaderboard-copy">
               <strong>${safeText(entry.nickname)}</strong>
-              <span>${entry.lines} lines · ${formatDuration(entry.durationMs)}</span>
+              <span>${entry.lines} 行 · ${formatDuration(entry.durationMs)}</span>
             </div>
             <span class="leaderboard-score">${formatScore(entry.score)}</span>
           </div>
         `)
         .join("");
     } else {
-      this.roomResultTitle.textContent = "Room Result";
+      this.roomResultTitle.textContent = "房间结果";
       this.roomResultStatus.textContent = "";
       this.roomResultList.innerHTML = "";
     }
@@ -3483,19 +3470,19 @@ export class RussianBlockApp {
     });
 
     if (!this.apiClient.configured) {
-      this.roomList.innerHTML = `<div class="history-empty">Online rooms are unavailable right now.</div>`;
+      this.roomList.innerHTML = `<div class="history-empty">当前无法使用联机房间。</div>`;
       return;
     }
     if (this.publicRoomsStatus === "loading" && this.publicRooms.length === 0) {
-      this.roomList.innerHTML = `<div class="history-empty">Refreshing public rooms…</div>`;
+      this.roomList.innerHTML = `<div class="history-empty">正在刷新公开房间…</div>`;
       return;
     }
     if (this.publicRoomsStatus === "error") {
-      this.roomList.innerHTML = `<div class="history-empty">${safeText(this.publicRoomsError || "Failed to load rooms.")}</div>`;
+      this.roomList.innerHTML = `<div class="history-empty">${safeText(this.publicRoomsError || "加载房间失败。")}</div>`;
       return;
     }
     if (this.publicRooms.length === 0) {
-      this.roomList.innerHTML = `<div class="history-empty">No open public rooms yet. Create one and share the 6-digit code.</div>`;
+      this.roomList.innerHTML = `<div class="history-empty">还没有可加入的公开房间。你可以先创建一个，再把 6 位房间码发给朋友。</div>`;
       return;
     }
 
@@ -3507,7 +3494,7 @@ export class RussianBlockApp {
             <span>${safeText(summarizeRoomProgress(room))} · ${safeText((room.players ?? []).map((player) => player.nickname).join(" / "))}</span>
           </button>
           <button type="button" class="secondary-btn menu-mini-btn" data-public-room-join="${room.code}" ${isRoomJoinable(room) ? "" : "disabled"}>
-            Join
+            加入
           </button>
         </div>
       `)
@@ -3985,7 +3972,7 @@ export class RussianBlockApp {
       this.stopReplay();
     }
     if (this.roomMatch && this.activeRoom?.status === "playing") {
-      this.statusMessage = "Room matches can't restart mid-round. Finish this seed or use rematch.";
+      this.statusMessage = "房间对战进行中不能中途重开，请先打完这一局或使用再来一局。";
       this.updateUiState();
       return;
     }
@@ -4046,7 +4033,7 @@ export class RussianBlockApp {
       gameMode: "gravity_shift",
       seed: this.selectedSeed,
     });
-    this.statusMessage = "Gravity Shift lab launched. Watch the warning before each flip.";
+    this.statusMessage = "重力反转实验已启动，请留意每次翻转前的预警。";
     this.updateUiState();
   }
 
@@ -4294,7 +4281,6 @@ export class RussianBlockApp {
 
   updateUiState() {
     this.muteToggle.checked = this.settings.muted;
-    this.autostartToggle.checked = this.settings.autoStartLastMode;
     this.ghostToggle.checked = this.settings.ghostEnabled;
     this.nicknameInput.value = this.settings.nickname ?? "";
     this.apiBaseInput.value = this.settings.devApiBase ?? "";
@@ -4333,8 +4319,8 @@ export class RussianBlockApp {
       const goalCopy = this.formatGoalCopy(sessionContext.goal);
       this.remoteSessionTitle.textContent =
         sessionContext.title ??
-        (sessionContext.type === "daily" ? `Daily ${sessionContext.date}` : `Challenge ${sessionContext.code}`);
-      this.remoteSessionCopy.textContent = goalCopy || `Seed ${sessionContext.seed ?? this.engine.sessionConfig.seed}`;
+        (sessionContext.type === "daily" ? `今日挑战 ${sessionContext.date}` : `挑战 ${sessionContext.code}`);
+      this.remoteSessionCopy.textContent = goalCopy || `种子 ${sessionContext.seed ?? this.engine.sessionConfig.seed}`;
     } else {
       this.remoteSessionTitle.textContent = "";
       this.remoteSessionCopy.textContent = "";
@@ -4344,8 +4330,8 @@ export class RussianBlockApp {
       this.ghostSessionTitle.textContent = ghostHud.title;
       this.ghostSessionCopy.textContent = `${ghostHud.sourceLabel} · ${ghostHud.statusCopy}`;
       this.ghostSessionGrid.innerHTML = `
-        <div class="watch-panel-chip"><strong>${safeText(ghostHud.leadCopy)}</strong><span>Gap</span></div>
-        <div class="watch-panel-chip"><strong>${safeText(ghostHud.progressCopy)}</strong><span>Progress</span></div>
+        <div class="watch-panel-chip"><strong>${safeText(ghostHud.leadCopy)}</strong><span>差距</span></div>
+        <div class="watch-panel-chip"><strong>${safeText(ghostHud.progressCopy)}</strong><span>进度</span></div>
       `;
     } else {
       this.ghostSessionTitle.textContent = "";
@@ -4356,18 +4342,18 @@ export class RussianBlockApp {
     if (this.replayPlayer && this.watchSession?.replay) {
       const watchedReplay = this.watchSession.replay;
       this.watchPanelTitle.textContent = `回放码 ${this.watchSession.code}`;
-      this.watchPanelCopy.textContent = "Copy it, turn it into a challenge, or jump back onto the same seed.";
+      this.watchPanelCopy.textContent = "可以复制链接、生成挑战，或重新挑战同一种子。";
       this.watchPanelGrid.innerHTML = `
-        <div class="watch-panel-chip"><strong>${safeText(this.watchSession.code)}</strong><span>Code</span></div>
-        <div class="watch-panel-chip"><strong>${safeText(getModeDefinition(watchedReplay.mode).name)}</strong><span>Mode</span></div>
+        <div class="watch-panel-chip"><strong>${safeText(this.watchSession.code)}</strong><span>回放码</span></div>
+        <div class="watch-panel-chip"><strong>${safeText(getModeDefinition(watchedReplay.mode).name)}</strong><span>模式</span></div>
         <div class="watch-panel-chip"><strong>${formatScore(watchedReplay.result?.score ?? 0)}</strong><span>分数</span></div>
         <div class="watch-panel-chip"><strong>${watchedReplay.result?.lines ?? 0}</strong><span>消行</span></div>
         <div class="watch-panel-chip"><strong>${formatDuration(watchedReplay.durationMs ?? 0)}</strong><span>时长</span></div>
-        <div class="watch-panel-chip"><strong>${safeText(watchedReplay.seed || "AUTO")}</strong><span>Seed</span></div>
+        <div class="watch-panel-chip"><strong>${safeText(watchedReplay.seed || "自动")}</strong><span>种子</span></div>
         <div class="watch-panel-chip"><strong>${safeText(getTheme(watchedReplay.themeId).name)}</strong><span>主题</span></div>
       `;
     } else {
-      this.watchPanelTitle.textContent = "Shared Replay";
+      this.watchPanelTitle.textContent = "分享回放";
       this.watchPanelCopy.textContent = "";
       this.watchPanelGrid.innerHTML = "";
     }
@@ -4378,27 +4364,27 @@ export class RussianBlockApp {
       const durationMs = Number(this.spectateSession.durationMs ?? watchedReplay.durationMs) || 0;
       const shareCode = String(this.spectateSession.code ?? "").trim();
       const raceSupported = isGhostReplaySupported(watchedReplay);
-      this.replayEyebrow.textContent = shareCode ? "Shared Spectate" : "Local Spectate";
+      this.replayEyebrow.textContent = shareCode ? "分享观战" : "本地观战";
       this.replayClock.textContent = formatReplayClock(currentTimeMs, durationMs);
       this.replayMarkerCopy.textContent = this.spectateMarker
-        ? `Marker: ${formatSpectateMarkerLabel(this.spectateMarker.reason)} · ${formatDuration(this.spectateMarker.at)}`
-        : "Marker: Start";
+        ? `节点：${formatSpectateMarkerLabel(this.spectateMarker.reason)} · ${formatDuration(this.spectateMarker.at)}`
+        : "节点：起点";
       this.replayToggleButton.textContent = this.spectateSession.isPlaying
-        ? "Pause"
+        ? "暂停"
         : this.replayPlayer.finished
-          ? "Replay"
-          : "Play";
-      this.watchPanelTitle.textContent = shareCode ? `Replay ${shareCode}` : "Replay Player";
+          ? "重播"
+          : "播放";
+      this.watchPanelTitle.textContent = shareCode ? `回放 ${shareCode}` : "回放播放器";
       this.watchPanelCopy.textContent = shareCode
-        ? "Pause, scrub, or challenge the same shared seed."
-        : "Local replays use the same player controls and can still be shared.";
+        ? "暂停、拖动时间轴，或直接挑战同一个分享种子。"
+        : "本地回放也能继续观战、分享和发起挑战。";
       this.watchPanelGrid.innerHTML = `
-        <div class="watch-panel-chip"><strong>${safeText(getModeDefinition(watchedReplay.mode).name)}</strong><span>Mode</span></div>
-        <div class="watch-panel-chip"><strong>${formatScore(watchedReplay.result?.score ?? 0)}</strong><span>Score</span></div>
-        <div class="watch-panel-chip"><strong>${watchedReplay.result?.lines ?? 0}</strong><span>Lines</span></div>
-        <div class="watch-panel-chip"><strong>${formatDuration(watchedReplay.durationMs ?? 0)}</strong><span>Duration</span></div>
-        <div class="watch-panel-chip"><strong>${safeText(watchedReplay.seed || "AUTO")}</strong><span>Seed</span></div>
-        <div class="watch-panel-chip"><strong>${safeText(getTheme(watchedReplay.themeId).name)}</strong><span>Theme</span></div>
+        <div class="watch-panel-chip"><strong>${safeText(getModeDefinition(watchedReplay.mode).name)}</strong><span>模式</span></div>
+        <div class="watch-panel-chip"><strong>${formatScore(watchedReplay.result?.score ?? 0)}</strong><span>分数</span></div>
+        <div class="watch-panel-chip"><strong>${watchedReplay.result?.lines ?? 0}</strong><span>消行</span></div>
+        <div class="watch-panel-chip"><strong>${formatDuration(watchedReplay.durationMs ?? 0)}</strong><span>时长</span></div>
+        <div class="watch-panel-chip"><strong>${safeText(watchedReplay.seed || "自动")}</strong><span>种子</span></div>
+        <div class="watch-panel-chip"><strong>${safeText(getTheme(watchedReplay.themeId).name)}</strong><span>主题</span></div>
       `;
       this.spectateCurrentTime.textContent = formatDuration(currentTimeMs);
       this.spectateTotalTime.textContent = formatDuration(durationMs);
@@ -4409,20 +4395,20 @@ export class RussianBlockApp {
         button.setAttribute("aria-pressed", String(active));
       });
       this.watchCopyButton.textContent = shareCode
-        ? "Copy Link"
+        ? "复制链接"
         : this.apiClient.configured
-          ? "Upload & Copy Link"
-          : "Copy Replay JSON";
+          ? "上传并复制链接"
+          : "复制回放数据";
       this.watchGhostButton.disabled = !raceSupported;
-      this.watchGhostButton.title = raceSupported ? "" : "Ghost Duel only supports Sprint / Ultra";
+      this.watchGhostButton.title = raceSupported ? "" : "影子挑战仅支持冲刺 40 行和极限 120 秒";
       this.watchHighlightButton.disabled = !shareCode && !this.apiClient.configured;
       this.renderSpectateMarkers();
     } else {
-      this.replayEyebrow.textContent = "Spectate";
+      this.replayEyebrow.textContent = "观战";
       this.replayClock.textContent = "00:00 / 00:00";
-      this.replayMarkerCopy.textContent = "Marker: Start";
-      this.replayToggleButton.textContent = "Pause";
-      this.watchPanelTitle.textContent = "Replay Player";
+      this.replayMarkerCopy.textContent = "节点：起点";
+      this.replayToggleButton.textContent = "暂停";
+      this.watchPanelTitle.textContent = "回放播放器";
       this.watchPanelCopy.textContent = "";
       this.watchPanelGrid.innerHTML = "";
       this.spectateCurrentTime.textContent = "00:00";
@@ -4448,38 +4434,38 @@ export class RussianBlockApp {
     const finishedRoomOutcome = finishedRoom ? evaluateRoomWinner(finishedRoom.mode, finishedRoom.results ?? []) : null;
     const finishedRoomViewerSlot = finishedRoom?.viewer?.slot ?? this.roomMatch?.playerSlot ?? null;
     if (this.engine.mode === "completed") {
-      this.resultEyebrow.textContent = "Completed";
+      this.resultEyebrow.textContent = "已完成";
       this.resultTitle.textContent =
         finishedRoom
           ? finishedRoomOutcome?.winnerSlot === null
-            ? "Room Draw"
+            ? "房间平局"
             : finishedRoomOutcome?.winnerSlot === finishedRoomViewerSlot
-              ? "Room Win"
-              : "Room Loss"
+              ? "房间胜利"
+              : "房间失利"
           : latestRun?.gameMode === "ghost_race"
           ? ghostResult?.outcome === "win"
-            ? "Ghost Duel Won"
+            ? "影子挑战胜利"
             : ghostResult?.outcome === "lose"
-              ? "Ghost Duel Lost"
-              : "Ghost Duel Draw"
+              ? "影子挑战失利"
+              : "影子挑战平局"
           : goalEvaluation?.passed === false
-            ? "Challenge Missed"
+            ? "挑战未达成"
             : "挑战完成";
     } else {
-      this.resultEyebrow.textContent = "Game Over";
+      this.resultEyebrow.textContent = "游戏结束";
       this.resultTitle.textContent =
         finishedRoom
           ? finishedRoomOutcome?.winnerSlot === null
-            ? "Room Draw"
+            ? "房间平局"
             : finishedRoomOutcome?.winnerSlot === finishedRoomViewerSlot
-              ? "Room Win"
-              : "Room Loss"
+              ? "房间胜利"
+              : "房间失利"
           : latestRun?.gameMode === "ghost_race" && ghostResult
           ? ghostResult.outcome === "win"
-            ? "Ghost Duel Won"
+            ? "影子挑战胜利"
             : ghostResult.outcome === "lose"
-              ? "Ghost Duel Lost"
-              : "Ghost Duel Draw"
+              ? "影子挑战失利"
+              : "影子挑战平局"
           : "堆到顶了";
     }
     this.gameOverCopy.textContent = `本局得分 ${formatScore(this.engine.score)}，最高分 ${formatScore(this.engine.bestScore)}。`;
@@ -4496,40 +4482,40 @@ export class RussianBlockApp {
         <div class="result-chip"><strong>${safeText(
           leaderboardContext.title ??
             (leaderboardContext.type === "daily" ? leaderboardContext.date : leaderboardContext.code)
-        )}</strong><span>${leaderboardContext.type === "daily" ? "Daily" : "Challenge"}</span></div>
-        <div class="result-chip"><strong>${safeText(this.formatGoalCopy(leaderboardContext.goal) || "Seed run")}</strong><span>Target</span></div>
+        )}</strong><span>${leaderboardContext.type === "daily" ? "今日挑战" : "挑战"}</span></div>
+        <div class="result-chip"><strong>${safeText(this.formatGoalCopy(leaderboardContext.goal) || "种子挑战")}</strong><span>目标</span></div>
       `;
     }
     if (goalEvaluation) {
       this.resultGrid.innerHTML += `
-        <div class="result-chip"><strong>${goalEvaluation.passed ? "Goal reached" : "Goal missed"}</strong><span>Status</span></div>
-        <div class="result-chip"><strong>${safeText(goalEvaluation.copy)}</strong><span>Delta</span></div>
+        <div class="result-chip"><strong>${goalEvaluation.passed ? "目标达成" : "目标未达成"}</strong><span>状态</span></div>
+        <div class="result-chip"><strong>${safeText(goalEvaluation.copy)}</strong><span>差值</span></div>
       `;
     }
     if (ghostResult) {
       this.resultGrid.innerHTML += `
-        <div class="result-chip"><strong>${safeText(ghostResult.outcome.toUpperCase())}</strong><span>Ghost Duel</span></div>
+        <div class="result-chip"><strong>${safeText(ghostResult.outcome.toUpperCase())}</strong><span>影子挑战</span></div>
         <div class="result-chip"><strong>${safeText(
           `${ghostResult.metric}: ${formatGhostMetricValue(ghostResult.metric, ghostResult.playerValue)} vs ${formatGhostMetricValue(
             ghostResult.metric,
             ghostResult.ghostValue
           )}`
-        )}</strong><span>Finish</span></div>
+        )}</strong><span>结果</span></div>
       `;
     }
     if (finishedRoom) {
       const winnerReplayCode = finishedRoomOutcome?.ordered?.[0]?.replayCode ?? null;
       this.resultGrid.innerHTML += `
-        <div class="result-chip"><strong>${safeText(finishedRoom.code)}</strong><span>Room Code</span></div>
-        <div class="result-chip"><strong>${safeText(getRoomModeLabel(finishedRoom.mode))}</strong><span>Room Match</span></div>
+        <div class="result-chip"><strong>${safeText(finishedRoom.code)}</strong><span>房间码</span></div>
+        <div class="result-chip"><strong>${safeText(getRoomModeLabel(finishedRoom.mode))}</strong><span>房间对战</span></div>
         <div class="result-chip"><strong>${safeText(
           finishedRoomOutcome?.winnerSlot === null
-            ? "Draw"
+            ? "平局"
             : finishedRoomOutcome?.winnerSlot === finishedRoomViewerSlot
-              ? "You won"
-              : "You lost"
-        )}</strong><span>Outcome</span></div>
-        <div class="result-chip"><strong>${safeText(winnerReplayCode || "No replay")}</strong><span>Winner Shadow</span></div>
+              ? "你赢了"
+              : "你输了"
+        )}</strong><span>结果</span></div>
+        <div class="result-chip"><strong>${safeText(winnerReplayCode || "暂无回放")}</strong><span>赢家影子</span></div>
       `;
     }
     if (latestSubmission) {
@@ -4572,7 +4558,7 @@ export class RussianBlockApp {
         this.leaderboardList.innerHTML = this.remoteLeaderboard.entries
           .slice(0, 5)
           .map((entry, index) => {
-            const name = String(entry.nickname ?? "").trim() || "Anonymous";
+            const name = String(entry.nickname ?? "").trim() || "未命名玩家";
             const isActive =
               Boolean(latestSubmission?.replayCode) &&
               String(entry.replay_code ?? entry.replayCode ?? "") === String(latestSubmission.replayCode);
@@ -4581,7 +4567,7 @@ export class RussianBlockApp {
                 <span class="leaderboard-rank">#${index + 1}</span>
                 <div class="leaderboard-copy">
                   <strong>${safeText(name)}</strong>
-                  <span>${Number(entry.lines) || 0} lines · ${formatDuration(Number(entry.duration_ms ?? entry.durationMs) || 0)}</span>
+                  <span>${Number(entry.lines) || 0} 行 · ${formatDuration(Number(entry.duration_ms ?? entry.durationMs) || 0)}</span>
                 </div>
                 <span class="leaderboard-score">${formatScore(Number(entry.score) || 0)}</span>
               </div>
@@ -4594,14 +4580,14 @@ export class RussianBlockApp {
               this.remoteLeaderboard.currentRank.nickname ??
                 latestSubmission?.payload?.nickname ??
                 this.settings.nickname ??
-                "Anonymous"
-            ).trim() || "Anonymous";
+                "未命名玩家"
+            ).trim() || "未命名玩家";
           this.leaderboardList.innerHTML += `
             <div class="leaderboard-row leaderboard-row--active">
               <span class="leaderboard-rank">#${this.remoteLeaderboard.currentRank.rank}</span>
               <div class="leaderboard-copy">
                 <strong>${safeText(currentName)}</strong>
-                <span>Your latest run</span>
+                <span>你的最新成绩</span>
               </div>
               <span class="leaderboard-score">${formatScore(Number(this.remoteLeaderboard.currentRank.score) || 0)}</span>
             </div>
@@ -4617,7 +4603,7 @@ export class RussianBlockApp {
     const highlightShareButton = this.root.querySelector("#highlight-share-btn");
     const canRaceLatestRun = isGhostReplaySupported(this.lastReplay);
     ghostRunButton.disabled = !canRaceLatestRun;
-    ghostRunButton.title = canRaceLatestRun ? "" : "Ghost Duel only supports Sprint / Ultra";
+    ghostRunButton.title = canRaceLatestRun ? "" : "影子挑战仅支持冲刺 40 行和极限 120 秒";
     highlightShareButton.disabled = !this.lastReplay || !this.apiClient.configured;
     const roomActionsVisible = Boolean(finishedRoom);
     this.roomBackButton.hidden = !roomActionsVisible;
@@ -4960,7 +4946,7 @@ export class RussianBlockApp {
     ctx.font = "700 18px 'Trebuchet MS', 'Segoe UI', sans-serif";
     ctx.textAlign = "center";
     ctx.fillText(
-      `Gravity flip in ${Math.max(1, Math.ceil((gravityState.msUntilFlip ?? 0) / 1000))}s`,
+      `重力将在 ${Math.max(1, Math.ceil((gravityState.msUntilFlip ?? 0) / 1000))} 秒后翻转`,
       layout.boardX + layout.boardWidth / 2,
       layout.boardY + 34
     );
@@ -5291,8 +5277,8 @@ export class RussianBlockApp {
           ["B2B", String(this.engine.backToBack)],
         ];
     if (!compact && gravityState?.enabled) {
-      lines.push(["Gravity", gravityState.direction > 0 ? "Down" : "Up"]);
-      lines.push(["Flip In", formatDuration(gravityState.msUntilFlip ?? 0)]);
+      lines.push(["重力", gravityState.direction > 0 ? "向下" : "向上"]);
+      lines.push(["反转倒计时", formatDuration(gravityState.msUntilFlip ?? 0)]);
     }
 
     ctx.save();
@@ -5331,11 +5317,11 @@ export class RussianBlockApp {
         : this.engine.mode === "menu"
           ? `${getModeDefinition(this.selectedGameMode).label} 已就绪`
           : this.ghostSession
-            ? "Ghost Duel · Pause both boards with P"
+            ? "影子挑战 · 按 P 同时暂停双方棋盘"
             : this.engine.sessionConfig.gravityShiftEnabled
-              ? "Gravity Shift · Watch the warning before each flip"
+              ? "重力反转 · 留意每次翻转前的预警"
           : layout.portrait
-            ? "滑动移动 单击旋转 双击 Hold"
+            ? "滑动移动 单击旋转 双击暂存"
             : "P 暂停  R 重开  F 全屏";
     ctx.save();
     ctx.fillStyle = this.theme.canvas.footer;

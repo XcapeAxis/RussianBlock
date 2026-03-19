@@ -31,7 +31,7 @@ function sanitizeRoomMode(modeId) {
   return ROOM_MODE_IDS.includes(modeId) ? modeId : ROOM_MODE_IDS[0];
 }
 
-function normalizeNickname(value, fallback = "Player") {
+function normalizeNickname(value, fallback = "玩家") {
   const nickname = String(value ?? "").trim().slice(0, 24);
   return nickname || fallback;
 }
@@ -289,14 +289,14 @@ async function generateUniqueRoomCode(env) {
       return code;
     }
   }
-  throw new Error("Unable to generate a unique room code.");
+  throw new Error("无法生成可用的房间码。");
 }
 
 async function handleCreateReplay(request, env, appBaseUrl) {
   const payload = await readJson(request);
   const replay = payload.replay;
   if (!replay || typeof replay !== "object") {
-    return json({ error: "Missing replay payload." }, { status: 400 });
+    return json({ error: "缺少回放数据。" }, { status: 400 });
   }
 
   const code = randomCode("R");
@@ -326,7 +326,7 @@ async function handleCreateReplay(request, env, appBaseUrl) {
 async function handleGetReplay(env, code) {
   const replayRow = await getReplay(env, code);
   if (!replayRow) {
-    return json({ error: "Replay not found." }, { status: 404 });
+    return json({ error: "未找到该回放。" }, { status: 404 });
   }
   return json({
     code,
@@ -343,7 +343,7 @@ async function handleCreateChallenge(request, env, appBaseUrl) {
     kind: String(payload.kind ?? "score_chase"),
     mode: String(payload.mode ?? "seed_challenge"),
     seed: String(payload.seed ?? ""),
-    title: String(payload.title ?? "Shared Challenge"),
+    title: String(payload.title ?? "分享挑战"),
     goal: payload.goal ?? {},
     replayCode: payload.replayCode ? String(payload.replayCode) : null,
     expiresAt: payload.expiresAt ? String(payload.expiresAt) : null,
@@ -379,7 +379,7 @@ async function handleGetChallenge(env, code) {
     .bind(code)
     .first();
   if (!row) {
-    return json({ error: "Challenge not found." }, { status: 404 });
+    return json({ error: "未找到该挑战。" }, { status: 404 });
   }
 
   return json({
@@ -424,7 +424,7 @@ async function handleGetDaily(env, date) {
     const config = {
       mode: "seed_challenge",
       seed: `daily-${date}`,
-      title: `Daily Challenge ${date}`,
+      title: `今日挑战 ${date}`,
       goal: {
         score: 2500,
         lines: 18,
@@ -555,7 +555,7 @@ async function handleGetPuzzle(env, code) {
     .bind(code)
     .first();
   if (!row) {
-    return json({ error: "Puzzle not found." }, { status: 404 });
+    return json({ error: "未找到该残局。" }, { status: 404 });
   }
   return json({
     code: row.code,
@@ -605,7 +605,7 @@ async function handleCreateRoom(request, env, appBaseUrl) {
   await env.DB.prepare(
     "INSERT INTO room_players (room_code, player_token, slot_index, nickname, is_ready, joined_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)"
   )
-    .bind(room.code, playerToken, 1, normalizeNickname(payload.nickname, "Host"), 0, createdAt, createdAt)
+    .bind(room.code, playerToken, 1, normalizeNickname(payload.nickname, "房主"), 0, createdAt, createdAt)
     .run();
 
   const serialized = await getSerializedRoom(env, appBaseUrl, code, playerToken);
@@ -643,7 +643,7 @@ async function handleGetPublicRooms(env, appBaseUrl, url) {
 async function handleGetRoom(env, appBaseUrl, code, url) {
   const serialized = await getSerializedRoom(env, appBaseUrl, code, url.searchParams.get("playerToken"));
   if (!serialized) {
-    return json({ error: "Room not found." }, { status: 404 });
+    return json({ error: "未找到该房间。" }, { status: 404 });
   }
   return json({ room: serialized });
 }
@@ -652,15 +652,15 @@ async function handleJoinRoom(request, env, appBaseUrl, code) {
   const payload = await readJson(request);
   let room = await getRoomRow(env, code);
   if (!room) {
-    return json({ error: "Room not found." }, { status: 404 });
+    return json({ error: "未找到该房间。" }, { status: 404 });
   }
   if (isRoomExpired(room)) {
     room = await saveRoomState(env, room, { status: "expired" });
-    return json({ error: "Room expired." }, { status: 410 });
+    return json({ error: "房间已过期。" }, { status: 410 });
   }
 
   const players = await getRoomPlayers(env, code);
-  const nickname = normalizeNickname(payload.nickname, `Player ${players.length + 1}`);
+  const nickname = normalizeNickname(payload.nickname, `玩家 ${players.length + 1}`);
   const playerToken = String(payload.playerToken ?? "").trim();
   const existingPlayer = playerToken ? players.find((player) => player.player_token === playerToken) ?? null : null;
 
@@ -676,7 +676,7 @@ async function handleJoinRoom(request, env, appBaseUrl, code) {
   }
 
   if (players.length >= ROOM_CAPACITY || ["playing", "finished", "expired"].includes(room.status)) {
-    return json({ error: "Room is not joinable." }, { status: 409 });
+    return json({ error: "当前房间无法加入。" }, { status: 409 });
   }
 
   const usedSlots = new Set(players.map((player) => Number(player.slot_index)));
@@ -702,17 +702,17 @@ async function handleLeaveRoom(request, env, appBaseUrl, code) {
   const payload = await readJson(request);
   const playerToken = String(payload.playerToken ?? "").trim();
   if (!playerToken) {
-    return json({ error: "Missing player token." }, { status: 400 });
+    return json({ error: "缺少玩家标识。" }, { status: 400 });
   }
 
   const room = await getRoomRow(env, code);
   if (!room) {
-    return json({ error: "Room not found." }, { status: 404 });
+    return json({ error: "未找到该房间。" }, { status: 404 });
   }
   const players = await getRoomPlayers(env, code);
   const existingPlayer = players.find((player) => player.player_token === playerToken);
   if (!existingPlayer) {
-    return json({ error: "Player not found in room." }, { status: 404 });
+    return json({ error: "房间中未找到该玩家。" }, { status: 404 });
   }
 
   await env.DB.prepare("DELETE FROM room_players WHERE player_token = ?").bind(playerToken).run();
@@ -745,17 +745,17 @@ async function handleRoomStart(request, env, appBaseUrl, code) {
   const payload = await readJson(request);
   const playerToken = String(payload.playerToken ?? "").trim();
   if (!playerToken) {
-    return json({ error: "Missing player token." }, { status: 400 });
+    return json({ error: "缺少玩家标识。" }, { status: 400 });
   }
 
   let room = await getRoomRow(env, code);
   if (!room) {
-    return json({ error: "Room not found." }, { status: 404 });
+    return json({ error: "未找到该房间。" }, { status: 404 });
   }
   const players = await getRoomPlayers(env, code);
   const player = players.find((entry) => entry.player_token === playerToken);
   if (!player) {
-    return json({ error: "Player not found in room." }, { status: 404 });
+    return json({ error: "房间中未找到该玩家。" }, { status: 404 });
   }
 
   const action = String(payload.action ?? "start");
@@ -770,13 +770,13 @@ async function handleRoomStart(request, env, appBaseUrl, code) {
   }
 
   if (playerToken !== room.host_token) {
-    return json({ error: "Only the host can start the room." }, { status: 403 });
+    return json({ error: "只有房主可以开始房间。" }, { status: 403 });
   }
   if (players.length < ROOM_CAPACITY) {
-    return json({ error: "Need two players before starting." }, { status: 409 });
+    return json({ error: "开始前需要两名玩家。" }, { status: 409 });
   }
   if (!players.every((entry) => Number(entry.is_ready) === 1)) {
-    return json({ error: "Both players must be ready." }, { status: 409 });
+    return json({ error: "两名玩家都需要先准备。" }, { status: 409 });
   }
 
   await saveRoomState(env, room, {
@@ -792,18 +792,18 @@ async function handleRoomSubmit(request, env, appBaseUrl, code) {
   const payload = await readJson(request);
   const playerToken = String(payload.playerToken ?? "").trim();
   if (!playerToken) {
-    return json({ error: "Missing player token." }, { status: 400 });
+    return json({ error: "缺少玩家标识。" }, { status: 400 });
   }
 
   let room = await getRoomRow(env, code);
   if (!room) {
-    return json({ error: "Room not found." }, { status: 404 });
+    return json({ error: "未找到该房间。" }, { status: 404 });
   }
 
   const players = await getRoomPlayers(env, code);
   const player = players.find((entry) => entry.player_token === playerToken);
   if (!player) {
-    return json({ error: "Player not found in room." }, { status: 404 });
+    return json({ error: "房间中未找到该玩家。" }, { status: 404 });
   }
 
   const summary = payload.summary ?? {
@@ -851,17 +851,17 @@ async function handleRoomRematch(request, env, appBaseUrl, code) {
   const payload = await readJson(request);
   const playerToken = String(payload.playerToken ?? "").trim();
   if (!playerToken) {
-    return json({ error: "Missing player token." }, { status: 400 });
+    return json({ error: "缺少玩家标识。" }, { status: 400 });
   }
 
   let room = await getRoomRow(env, code);
   if (!room) {
-    return json({ error: "Room not found." }, { status: 404 });
+    return json({ error: "未找到该房间。" }, { status: 404 });
   }
 
   const players = await getRoomPlayers(env, code);
   if (!players.some((player) => player.player_token === playerToken)) {
-    return json({ error: "Player not found in room." }, { status: 404 });
+    return json({ error: "房间中未找到该玩家。" }, { status: 404 });
   }
 
   const nextRound = Number(room.current_round) + 1;
@@ -893,7 +893,7 @@ export default {
     const segments = url.pathname.split("/").filter(Boolean);
 
     if (segments[0] !== "api") {
-      return json({ error: "Not found." }, { status: 404 });
+      return json({ error: "未找到接口。" }, { status: 404 });
     }
 
     if (request.method === "POST" && segments[1] === "replays" && segments.length === 2) {
@@ -956,6 +956,6 @@ export default {
       return handleRoomRematch(request, env, appBaseUrl, segments[2]);
     }
 
-    return json({ error: "Not found." }, { status: 404 });
+    return json({ error: "未找到接口。" }, { status: 404 });
   },
 };
