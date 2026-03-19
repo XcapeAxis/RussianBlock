@@ -23,7 +23,7 @@ export function isRoomJoinable(room) {
 }
 
 export function getRoomModeLabel(modeId) {
-  return modeId === "ultra" ? "Ultra 120s" : "Sprint 40L";
+  return modeId === "ultra" ? "极限 120 秒" : "冲刺 40 行";
 }
 
 export function getRoomStatusCopy(room) {
@@ -31,18 +31,18 @@ export function getRoomStatusCopy(room) {
     return "";
   }
   if (room.expired || room.status === "expired") {
-    return "Expired";
+    return "已过期";
   }
   if (room.status === "finished") {
-    return "Finished";
+    return "已结束";
   }
   if (room.status === "playing") {
-    return "Playing";
+    return "对战中";
   }
   if (room.status === "ready") {
-    return "Ready";
+    return "已就绪";
   }
-  return Number(room.players?.length ?? 0) >= ROOM_CAPACITY ? "Full" : "Waiting";
+  return Number(room.players?.length ?? 0) >= ROOM_CAPACITY ? "已满员" : "等待中";
 }
 
 export function summarizeRoomProgress(room) {
@@ -51,15 +51,15 @@ export function summarizeRoomProgress(room) {
   }
   const playerCount = Number(room.players?.length ?? 0);
   if (room.expired || room.status === "expired") {
-    return "Room expired";
+    return "房间已过期";
   }
   if (room.status === "finished") {
-    return `Round ${room.roundNumber ?? 1} complete`;
+    return `第 ${room.roundNumber ?? 1} 局已结束`;
   }
   if (room.status === "playing") {
-    return `Round ${room.roundNumber ?? 1} in progress`;
+    return `第 ${room.roundNumber ?? 1} 局进行中`;
   }
-  return `${playerCount}/${ROOM_CAPACITY} players`;
+  return `${playerCount}/${ROOM_CAPACITY} 名玩家`;
 }
 
 function normalizeRoomResult(result = {}) {
@@ -128,4 +128,3 @@ export function evaluateRoomWinner(modeId, results = []) {
     ordered,
   };
 }
-

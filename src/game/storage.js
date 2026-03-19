@@ -10,7 +10,7 @@ const DEFAULT_SETTINGS = {
   themeId: DEFAULT_THEME_ID,
   lastMode: DEFAULT_GAME_MODE,
   lastSeed: normalizeSeed("starter-seed"),
-  autoStartLastMode: true,
+  autoStartLastMode: false,
   ghostEnabled: true,
   devApiBase: "",
   nickname: "",
@@ -29,7 +29,7 @@ export function loadSettings() {
       themeId: isThemeId(parsed.themeId) ? parsed.themeId : DEFAULT_THEME_ID,
       lastMode: sanitizeGameMode(parsed.lastMode),
       lastSeed: normalizeSeed(parsed.lastSeed),
-      autoStartLastMode: parsed.autoStartLastMode !== false,
+      autoStartLastMode: Boolean(parsed.autoStartLastMode),
       ghostEnabled: parsed.ghostEnabled !== false,
       devApiBase:
         typeof parsed.devApiBase === "string"
@@ -51,7 +51,7 @@ export function saveSettings(nextSettings) {
     themeId: isThemeId(nextSettings.themeId) ? nextSettings.themeId : DEFAULT_THEME_ID,
     lastMode: sanitizeGameMode(nextSettings.lastMode),
     lastSeed: normalizeSeed(nextSettings.lastSeed),
-    autoStartLastMode: nextSettings.autoStartLastMode !== false,
+    autoStartLastMode: Boolean(nextSettings.autoStartLastMode),
     ghostEnabled: nextSettings.ghostEnabled !== false,
     devApiBase: typeof nextSettings.devApiBase === "string" ? nextSettings.devApiBase.trim() : "",
     nickname: typeof nextSettings.nickname === "string" ? nextSettings.nickname.trim().slice(0, 24) : "",

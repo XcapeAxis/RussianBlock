@@ -132,7 +132,7 @@ export const THEMES = [
     name: "经典",
     description: "蓝夜主机舱，保留原版科技感和暖色高光。",
     preview: {
-      badge: "Neo Arcade",
+      badge: "经典街机",
       stops: ["#102749", "#183960", "#ffb347", "#7dd3fc"],
     },
     ui: {
@@ -190,7 +190,7 @@ export const THEMES = [
     name: "海洋",
     description: "深海蓝绿与珍珠冷光，方块像被海水包裹的半透明晶体。",
     preview: {
-      badge: "Deep Tide",
+      badge: "深海潮汐",
       stops: ["#041922", "#0b5360", "#56d9f6", "#dff8ff"],
     },
     ui: {
@@ -248,7 +248,7 @@ export const THEMES = [
     name: "宝石",
     description: "深色绒面底座配切面晶石，亮边和镜面反射更强。",
     preview: {
-      badge: "Cut Prism",
+      badge: "切面棱镜",
       stops: ["#18081f", "#3d1149", "#bf69ff", "#58f4ff"],
     },
     ui: {
@@ -306,7 +306,7 @@ export const THEMES = [
     name: "星空",
     description: "深空蓝紫、冷白描边和星尘纹理，整体更冷静克制。",
     preview: {
-      badge: "Night Field",
+      badge: "夜空星域",
       stops: ["#090d20", "#172457", "#7abfff", "#f4fbff"],
     },
     ui: {
@@ -364,7 +364,7 @@ export const THEMES = [
     name: "极光",
     description: "青绿与紫色流光扫过冷色背景，面板和方块都有丝带感。",
     preview: {
-      badge: "Polar Veil",
+      badge: "极地光幕",
       stops: ["#051620", "#0d3540", "#7ff0c8", "#df9cff"],
     },
     ui: {
@@ -422,7 +422,7 @@ export const THEMES = [
     name: "熔岩",
     description: "黑曜石外壳里有热浪和裂纹，高温高对比但保持可读性。",
     preview: {
-      badge: "Molten Core",
+      badge: "熔核之心",
       stops: ["#150807", "#37110d", "#ff8c35", "#ffd257"],
     },
     ui: {

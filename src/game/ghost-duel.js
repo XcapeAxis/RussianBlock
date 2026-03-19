@@ -32,7 +32,7 @@ export function isGhostReplaySupported(replay) {
 
 export function buildGhostDuelLabel(modeId) {
   const mode = getModeDefinition(sanitizeGhostDuelMode(modeId));
-  return `Ghost Duel · ${mode.name}`;
+  return `影子挑战 / ${mode.name}`;
 }
 
 function isCompletedSprint(summary) {
